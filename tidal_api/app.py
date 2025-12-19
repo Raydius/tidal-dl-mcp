@@ -7,6 +7,12 @@ from pathlib import Path
 
 from browser_session import BrowserSession
 from utils import format_track_data, bound_limit
+from download_utils import (
+    check_tdn_installed,
+    execute_tdn_download,
+    execute_tdn_download_favorites,
+    build_tidal_url
+)
 
 app = Flask(__name__)
 token_path = os.path.join(tempfile.gettempdir(), 'tidal-session-oauth.json')
@@ -380,8 +386,164 @@ def delete_playlist(playlist_id: str, session: BrowserSession):
         
     except Exception as e:
         return jsonify({"error": f"Error deleting playlist: {str(e)}"}), 500
-    
-    
+
+
+# =============================================================================
+# Download Endpoints (using tidal-dl-ng)
+# Note: These endpoints do NOT use @requires_tidal_auth because tidal-dl-ng
+# has its own separate authentication via 'tdn login'
+# =============================================================================
+
+@app.route('/api/download/status', methods=['GET'])
+def get_download_status():
+    """
+    Check if tidal-dl-ng is installed and ready for downloads.
+    """
+    try:
+        status = check_tdn_installed()
+        return jsonify(status)
+    except Exception as e:
+        return jsonify({"error": f"Error checking tdn status: {str(e)}"}), 500
+
+
+@app.route('/api/download/track', methods=['POST'])
+def download_track():
+    """
+    Download a track using tidal-dl-ng.
+
+    Expected JSON payload:
+    {
+        "track_id": "123456789"
+    }
+    """
+    try:
+        request_data = request.get_json()
+        if not request_data or 'track_id' not in request_data:
+            return jsonify({"error": "Missing 'track_id' in request body"}), 400
+
+        track_id = str(request_data['track_id'])
+        url = build_tidal_url('track', track_id)
+
+        result = execute_tdn_download(url, timeout=300)
+
+        if result['status'] == 'success':
+            return jsonify({
+                "status": "success",
+                "message": f"Track {track_id} downloaded successfully",
+                "url": url,
+                "output": result.get('stdout', '')
+            })
+        else:
+            status_code = 500 if 'not installed' in result.get('message', '') else 400
+            return jsonify(result), status_code
+
+    except Exception as e:
+        return jsonify({"error": f"Error downloading track: {str(e)}"}), 500
+
+
+@app.route('/api/download/album', methods=['POST'])
+def download_album():
+    """
+    Download an album using tidal-dl-ng.
+
+    Expected JSON payload:
+    {
+        "album_id": "123456789"
+    }
+    """
+    try:
+        request_data = request.get_json()
+        if not request_data or 'album_id' not in request_data:
+            return jsonify({"error": "Missing 'album_id' in request body"}), 400
+
+        album_id = str(request_data['album_id'])
+        url = build_tidal_url('album', album_id)
+
+        result = execute_tdn_download(url, timeout=600)
+
+        if result['status'] == 'success':
+            return jsonify({
+                "status": "success",
+                "message": f"Album {album_id} downloaded successfully",
+                "url": url,
+                "output": result.get('stdout', '')
+            })
+        else:
+            status_code = 500 if 'not installed' in result.get('message', '') else 400
+            return jsonify(result), status_code
+
+    except Exception as e:
+        return jsonify({"error": f"Error downloading album: {str(e)}"}), 500
+
+
+@app.route('/api/download/playlist', methods=['POST'])
+def download_playlist_content():
+    """
+    Download a playlist using tidal-dl-ng.
+
+    Expected JSON payload:
+    {
+        "playlist_id": "uuid-string-here"
+    }
+    """
+    try:
+        request_data = request.get_json()
+        if not request_data or 'playlist_id' not in request_data:
+            return jsonify({"error": "Missing 'playlist_id' in request body"}), 400
+
+        playlist_id = str(request_data['playlist_id'])
+        url = build_tidal_url('playlist', playlist_id)
+
+        result = execute_tdn_download(url, timeout=1200)
+
+        if result['status'] == 'success':
+            return jsonify({
+                "status": "success",
+                "message": f"Playlist {playlist_id} downloaded successfully",
+                "url": url,
+                "output": result.get('stdout', '')
+            })
+        else:
+            status_code = 500 if 'not installed' in result.get('message', '') else 400
+            return jsonify(result), status_code
+
+    except Exception as e:
+        return jsonify({"error": f"Error downloading playlist: {str(e)}"}), 500
+
+
+@app.route('/api/download/favorites', methods=['POST'])
+def download_favorites():
+    """
+    Download favorites using tidal-dl-ng.
+
+    Expected JSON payload:
+    {
+        "type": "tracks"  # or "albums", "artists", "videos"
+    }
+    """
+    try:
+        request_data = request.get_json()
+        if not request_data or 'type' not in request_data:
+            return jsonify({"error": "Missing 'type' in request body"}), 400
+
+        fav_type = str(request_data['type']).lower()
+
+        result = execute_tdn_download_favorites(fav_type, timeout=1800)
+
+        if result['status'] == 'success':
+            return jsonify({
+                "status": "success",
+                "message": f"Favorite {fav_type} downloaded successfully",
+                "output": result.get('stdout', '')
+            })
+        else:
+            status_code = 500 if 'not installed' in result.get('message', '') else 400
+            return jsonify(result), status_code
+
+    except Exception as e:
+        return jsonify({"error": f"Error downloading favorites: {str(e)}"}), 500
+
+
 if __name__ == '__main__':
     import os
     

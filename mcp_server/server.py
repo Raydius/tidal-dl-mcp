@@ -605,3 +605,341 @@ def delete_tidal_playlist(playlist_id: str) -> dict:
             "status": "error",
             "message": f"Failed to connect to TIDAL playlist service: {str(e)}"
         }
+
+
+# =============================================================================
+# Download Tools (using tidal-dl-ng CLI)
+# These tools require tidal-dl-ng to be installed and authenticated separately.
+# =============================================================================
+
+@mcp.tool()
+def download_track(track_id: str) -> dict:
+    """
+    Downloads a TIDAL track to local storage using tidal-dl-ng.
+
+    USE THIS TOOL WHENEVER A USER ASKS FOR:
+    - "Download this track"
+    - "Save this song to my computer"
+    - "Download track ID X"
+    - "I want to download [song name]" (after identifying the track ID)
+    - Any request to download a single track from TIDAL
+
+    IMPORTANT PREREQUISITES:
+    1. tidal-dl-ng must be installed: pip install tidal-dl-ng
+    2. User must have authenticated tidal-dl-ng: run 'tdn login' in terminal
+    3. tidal-dl-ng authentication is SEPARATE from TIDAL MCP authentication
+
+    When processing the results of this tool:
+    1. Confirm the download was successful or explain any errors
+    2. If tidal-dl-ng is not installed, guide user to install it
+    3. If authentication failed, guide user to run 'tdn login' in terminal
+    4. The file will be saved to tidal-dl-ng's configured download location
+
+    Args:
+        track_id: The TIDAL track ID to download (numeric string)
+
+    Returns:
+        A dictionary containing download status and any output messages
+    """
+    try:
+        # Check if tdn is installed first
+        status_check = requests.get(f"{FLASK_APP_URL}/api/download/status")
+        status_data = status_check.json()
+
+        if not status_data.get("installed", False):
+            return {
+                "status": "error",
+                "message": "tidal-dl-ng is not installed. Please install it with: pip install tidal-dl-ng"
+            }
+
+        # Validate track_id
+        if not track_id:
+            return {
+                "status": "error",
+                "message": "Track ID is required."
+            }
+
+        # Attempt download
+        response = requests.post(
+            f"{FLASK_APP_URL}/api/download/track",
+            json={"track_id": track_id},
+            timeout=320
+        )
+
+        result = response.json()
+
+        if response.status_code == 200:
+            return {
+                "status": "success",
+                "message": f"Successfully downloaded track {track_id}",
+                "url": result.get("url", ""),
+                "details": result.get("output", "")
+            }
+        else:
+            return {
+                "status": "error",
+                "message": result.get("message", result.get("error", "Download failed"))
+            }
+
+    except requests.exceptions.Timeout:
+        return {
+            "status": "error",
+            "message": "Download request timed out. The track may still be downloading in the background."
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Failed to download track: {str(e)}"
+        }
+
+
+@mcp.tool()
+def download_album(album_id: str) -> dict:
+    """
+    Downloads a TIDAL album to local storage using tidal-dl-ng.
+
+    USE THIS TOOL WHENEVER A USER ASKS FOR:
+    - "Download this album"
+    - "Save this album to my computer"
+    - "Download album ID X"
+    - "I want to download [album name]" (after identifying the album ID)
+    - Any request to download a complete album from TIDAL
+
+    IMPORTANT PREREQUISITES:
+    1. tidal-dl-ng must be installed: pip install tidal-dl-ng
+    2. User must have authenticated tidal-dl-ng: run 'tdn login' in terminal
+    3. tidal-dl-ng authentication is SEPARATE from TIDAL MCP authentication
+
+    When processing the results of this tool:
+    1. Confirm the download was successful or explain any errors
+    2. Note that albums may take several minutes to download
+    3. If tidal-dl-ng is not installed, guide user to install it
+    4. If authentication failed, guide user to run 'tdn login' in terminal
+    5. The files will be saved to tidal-dl-ng's configured download location
+
+    Args:
+        album_id: The TIDAL album ID to download (numeric string)
+
+    Returns:
+        A dictionary containing download status and any output messages
+    """
+    try:
+        # Check if tdn is installed first
+        status_check = requests.get(f"{FLASK_APP_URL}/api/download/status")
+        status_data = status_check.json()
+
+        if not status_data.get("installed", False):
+            return {
+                "status": "error",
+                "message": "tidal-dl-ng is not installed. Please install it with: pip install tidal-dl-ng"
+            }
+
+        # Validate album_id
+        if not album_id:
+            return {
+                "status": "error",
+                "message": "Album ID is required."
+            }
+
+        # Attempt download (longer timeout for albums)
+        response = requests.post(
+            f"{FLASK_APP_URL}/api/download/album",
+            json={"album_id": album_id},
+            timeout=620
+        )
+
+        result = response.json()
+
+        if response.status_code == 200:
+            return {
+                "status": "success",
+                "message": f"Successfully downloaded album {album_id}",
+                "url": result.get("url", ""),
+                "details": result.get("output", "")
+            }
+        else:
+            return {
+                "status": "error",
+                "message": result.get("message", result.get("error", "Download failed"))
+            }
+
+    except requests.exceptions.Timeout:
+        return {
+            "status": "error",
+            "message": "Download request timed out. The album may still be downloading in the background."
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Failed to download album: {str(e)}"
+        }
+
+
+@mcp.tool()
+def download_playlist(playlist_id: str) -> dict:
+    """
+    Downloads a TIDAL playlist to local storage using tidal-dl-ng.
+
+    USE THIS TOOL WHENEVER A USER ASKS FOR:
+    - "Download this playlist"
+    - "Save this playlist to my computer"
+    - "Download playlist ID X"
+    - "I want to download [playlist name]" (after identifying the playlist ID)
+    - Any request to download a complete playlist from TIDAL
+
+    IMPORTANT PREREQUISITES:
+    1. tidal-dl-ng must be installed: pip install tidal-dl-ng
+    2. User must have authenticated tidal-dl-ng: run 'tdn login' in terminal
+    3. tidal-dl-ng authentication is SEPARATE from TIDAL MCP authentication
+
+    When processing the results of this tool:
+    1. Confirm the download was successful or explain any errors
+    2. Note that playlists may take a long time to download depending on size
+    3. If tidal-dl-ng is not installed, guide user to install it
+    4. If authentication failed, guide user to run 'tdn login' in terminal
+    5. The files will be saved to tidal-dl-ng's configured download location
+
+    You can get playlist IDs from the get_user_playlists() function.
+
+    Args:
+        playlist_id: The TIDAL playlist ID/UUID to download
+
+    Returns:
+        A dictionary containing download status and any output messages
+    """
+    try:
+        # Check if tdn is installed first
+        status_check = requests.get(f"{FLASK_APP_URL}/api/download/status")
+        status_data = status_check.json()
+
+        if not status_data.get("installed", False):
+            return {
+                "status": "error",
+                "message": "tidal-dl-ng is not installed. Please install it with: pip install tidal-dl-ng"
+            }
+
+        # Validate playlist_id
+        if not playlist_id:
+            return {
+                "status": "error",
+                "message": "Playlist ID is required. You can get playlist IDs using get_user_playlists()."
+            }
+
+        # Attempt download (longest timeout for playlists)
+        response = requests.post(
+            f"{FLASK_APP_URL}/api/download/playlist",
+            json={"playlist_id": playlist_id},
+            timeout=1220
+        )
+
+        result = response.json()
+
+        if response.status_code == 200:
+            return {
+                "status": "success",
+                "message": f"Successfully downloaded playlist {playlist_id}",
+                "url": result.get("url", ""),
+                "details": result.get("output", "")
+            }
+        else:
+            return {
+                "status": "error",
+                "message": result.get("message", result.get("error", "Download failed"))
+            }
+
+    except requests.exceptions.Timeout:
+        return {
+            "status": "error",
+            "message": "Download request timed out. The playlist may still be downloading in the background."
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Failed to download playlist: {str(e)}"
+        }
+
+
+@mcp.tool()
+def download_favorites(favorite_type: str = "tracks") -> dict:
+    """
+    Downloads all favorites of a specific type from TIDAL using tidal-dl-ng.
+
+    USE THIS TOOL WHENEVER A USER ASKS FOR:
+    - "Download all my favorite tracks"
+    - "Download my saved albums"
+    - "Save all my favorites to my computer"
+    - "Download my favorite artists' music"
+    - Any request to download their saved/favorite content from TIDAL
+
+    IMPORTANT PREREQUISITES:
+    1. tidal-dl-ng must be installed: pip install tidal-dl-ng
+    2. User must have authenticated tidal-dl-ng: run 'tdn login' in terminal
+    3. tidal-dl-ng authentication is SEPARATE from TIDAL MCP authentication
+
+    When processing the results of this tool:
+    1. Confirm the download was started/completed or explain any errors
+    2. Warn user that downloading all favorites can take a VERY long time
+    3. If tidal-dl-ng is not installed, guide user to install it
+    4. If authentication failed, guide user to run 'tdn login' in terminal
+    5. The files will be saved to tidal-dl-ng's configured download location
+
+    Args:
+        favorite_type: Type of favorites to download. One of:
+                      - "tracks" (default) - Download all favorite tracks
+                      - "albums" - Download all favorite albums
+                      - "artists" - Download all content from favorite artists
+                      - "videos" - Download all favorite videos
+
+    Returns:
+        A dictionary containing download status and any output messages
+    """
+    try:
+        # Validate favorite_type
+        valid_types = ["tracks", "albums", "artists", "videos"]
+        if favorite_type.lower() not in valid_types:
+            return {
+                "status": "error",
+                "message": f"Invalid favorite type '{favorite_type}'. Must be one of: {', '.join(valid_types)}"
+            }
+
+        # Check if tdn is installed first
+        status_check = requests.get(f"{FLASK_APP_URL}/api/download/status")
+        status_data = status_check.json()
+
+        if not status_data.get("installed", False):
+            return {
+                "status": "error",
+                "message": "tidal-dl-ng is not installed. Please install it with: pip install tidal-dl-ng"
+            }
+
+        # Attempt download (very long timeout for favorites)
+        response = requests.post(
+            f"{FLASK_APP_URL}/api/download/favorites",
+            json={"type": favorite_type.lower()},
+            timeout=1820
+        )
+
+        result = response.json()
+
+        if response.status_code == 200:
+            return {
+                "status": "success",
+                "message": f"Successfully downloaded favorite {favorite_type}",
+                "details": result.get("output", "")
+            }
+        else:
+            return {
+                "status": "error",
+                "message": result.get("message", result.get("error", "Download failed"))
+            }
+
+    except requests.exceptions.Timeout:
+        return {
+            "status": "error",
+            "message": f"Download request timed out. The {favorite_type} may still be downloading in the background."
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Failed to download favorites: {str(e)}"
+        }

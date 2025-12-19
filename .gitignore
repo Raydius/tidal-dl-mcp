@@ -11,3 +11,7 @@ wheels/
 
 # Others
 play.ipynb
+
+# Dev assets
+CLAUDE.md
+.claude/
