@@ -1,27 +1,15 @@
-# TIDAL MCP: My Custom Picks 🌟🎧
+# TIDAL MCP
 
-> **Fork Notice**: This is a fork of [yuhuacheng/tidal-mcp](https://github.com/yuhuacheng/tidal-mcp) with added download functionality via [tidal-dl-ng](https://github.com/exislow/tidal-dl-ng) integration.
 
-![Demo: Music Recommendations in Action](./assets/tidal_mcp_demo.gif)
+This is originally a fork of [yuhuacheng/tidal-mcp](https://github.com/yuhuacheng/tidal-mcp).  In addition to added Tidal search functionality and the ability to run [tidal-dl-ng](https://github.com/exislow/tidal-dl-ng) (if you have it installed), there have been other stability and performance improvements.
 
-Most music platforms offer recommendations — Daily Discovery, Top Artists, New Arrivals, etc. — but even with the state-of-the-art system, they often feel too "aggregated". I wanted something more custom and context-aware.
-
-With TIDAL MCP, you can ask for things like:
-> *"Based on my last 10 favorites, find similar tracks — but only ones from recent years."*
->
-> *"Find me tracks like those in this playlist, but slower and more acoustic."*
-
-The LLM filters and curates results using your input, finds similar tracks via TIDAL’s API, and builds new playlists directly in your account.
-
-<a href="https://glama.ai/mcp/servers/@yuhuacheng/tidal-mcp">
-  <img width="400" height="200" src="https://glama.ai/mcp/servers/@yuhuacheng/tidal-mcp/badge" alt="TIDAL: My Custom Picks MCP server" />
-</a>
 
 ## Features
 
+- 🔍 **Music Search**: Search TIDAL's catalog for tracks, albums, and artists by name
 - 🌟 **Music Recommendations**: Get personalized track recommendations based on your listening history **plus your custom criteria**.
 - ၊၊||၊ **Playlist Management**: Create, view, and manage your TIDAL playlists
-- 📥 **Music Downloads**: Download tracks, albums, playlists, and favorites via tidal-dl-ng integration
+- 📥 **Music Downloads**: Download tracks, albums, playlists, and favorites via [tidal-dl-ng](https://github.com/exislow/tidal-dl-ng) integration
 
 ## Quick Start
 
@@ -114,9 +102,15 @@ Example scrrenshot of the MCP configuration in Claude Desktop:
 ## Suggested Prompt Starters
 Once configured, you can interact with your TIDAL account through a LLM by asking questions like:
 
-- *“Recommend songs like those in this playlist, but slower and more acoustic.”*
-- *“Create a playlist based on my top tracks, but focused on chill, late-night vibes.”*
-- *“Find songs like these in playlist XYZ but in languages other than English.”*
+**Search Examples:**
+- *"Search for Bohemian Rhapsody"*
+- *"Find albums by Radiohead"*
+- *"Look up the artist Daft Punk"*
+
+**Recommendation Examples:**
+- *"Recommend songs like those in this playlist, but slower and more acoustic."*
+- *"Create a playlist based on my top tracks, but focused on chill, late-night vibes."*
+- *"Find songs like these in playlist XYZ but in languages other than English."*
 
 *💡 You can also ask the model to:*
 - Use more tracks as seeds to broaden the inspiration.
@@ -134,6 +128,7 @@ The TIDAL MCP integration provides the following tools:
 
 **Core Tools:**
 - `tidal_login`: Authenticate with TIDAL through browser login flow
+- `search_tidal`: Search TIDAL for tracks, albums, and artists by name
 - `get_favorite_tracks`: Retrieve your favorite tracks from TIDAL
 - `recommend_tracks`: Get personalized music recommendations
 - `create_tidal_playlist`: Create a new playlist in your TIDAL account
