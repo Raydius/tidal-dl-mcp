@@ -24,24 +24,13 @@ This is originally a fork of [yuhuacheng/tidal-mcp](https://github.com/yuhuachen
 
 1. Clone this repository:
    ```bash
-   git clone https://github.com/yuhuacheng/tidal-mcp.git
-   cd tidal-mcp
+   git clone https://github.com/yourusername/tidal-dl-mcp.git
+   cd tidal-dl-mcp
    ```
 
-2. Create a virtual environment and install dependencies using uv:
-   ```bash
-   uv venv
-   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-   ```
+2. **Important**: Do NOT create a virtual environment or run `uv pip install --editable .` in this directory. Claude Desktop uses `uv run` with `--with` flags to create an isolated environment automatically. Having a local `.venv` or editable install can cause version conflicts and hangs.
 
-3. Install the package with all dependencies from the pyproject.toml file:
-   ```bash
-   uv pip install --editable .
-   ```
-
-   This will install all dependencies defined in the pyproject.toml file and set up the project in development mode.
-
-4. (Optional) Set up tidal-dl-ng for download functionality:
+3. (Optional) Set up tidal-dl-ng for download functionality:
    ```bash
    # Install tidal-dl-ng
    pipx install tidal-dl-ng
@@ -141,6 +130,36 @@ The TIDAL MCP integration provides the following tools:
 - `download_album`: Download an entire album by ID
 - `download_playlist`: Download all tracks from a playlist
 - `download_favorites`: Download all favorites (tracks, albums, artists, or videos)
+
+## Troubleshooting
+
+If the MCP server hangs when Claude Desktop tries to call tools:
+
+1. **Delete any local Python environment artifacts**:
+   ```bash
+   # Remove these if they exist in the project directory
+   rm -rf .venv
+   rm -rf tidal_mcp.egg-info
+   rm -f uv.lock
+
+   # Clear Python cache
+   find . -type d -name __pycache__ -exec rm -rf {} +
+   ```
+
+2. **Check for port conflicts** (default port is 5050):
+   ```bash
+   # Windows
+   netstat -ano | findstr ":5050"
+
+   # Kill any conflicting processes
+   taskkill /PID <pid> /F
+   ```
+
+3. **Restart Claude Desktop** after making changes
+
+4. **Check logs** at:
+   - Windows: `%APPDATA%\Claude\logs\mcp-server-tidal.log`
+   - macOS/Linux: `~/.claude/logs/mcp-server-tidal.log`
 
 ## License
 
