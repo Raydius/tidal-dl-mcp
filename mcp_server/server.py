@@ -1,19 +1,27 @@
 from mcp.server.fastmcp import FastMCP
 import requests
 import atexit
+import sys
 
 from typing import Optional, List
 
 from utils import start_flask_app, shutdown_flask_app, FLASK_APP_URL, FLASK_PORT
 
-# Print the port being used for debugging
-print(f"TIDAL MCP starting on port {FLASK_PORT}")
+# Timeout for Flask backend requests (seconds)
+# This prevents tools from hanging indefinitely if Flask is unresponsive
+REQUEST_TIMEOUT = 15
+
+# Extended timeout for operations that may take longer (fetching many playlists, etc.)
+EXTENDED_TIMEOUT = 60
+
+# Print the port being used for debugging (to stderr per MCP protocol)
+print(f"TIDAL MCP starting on port {FLASK_PORT}", file=sys.stderr, flush=True)
 
 # Create an MCP server
 mcp = FastMCP("TIDAL MCP")
 
 # Start the Flask app when this script is loaded
-print("MCP server module is being loaded. Starting Flask app...")
+print("MCP server module is being loaded. Starting Flask app...", file=sys.stderr, flush=True)
 start_flask_app()
 
 # Register the shutdown function to be called when the MCP server exits
@@ -30,7 +38,8 @@ def tidal_login() -> dict:
     """
     try:
         # Call your Flask endpoint for TIDAL authentication
-        response = requests.get(f"{FLASK_APP_URL}/api/auth/login")
+        # Use longer timeout (5 min) since user needs to complete OAuth in browser
+        response = requests.get(f"{FLASK_APP_URL}/api/auth/login", timeout=300)
 
         # Check if the request was successful
         if response.status_code == 200:
@@ -41,6 +50,16 @@ def tidal_login() -> dict:
                 "status": "error",
                 "message": f"Authentication failed: {error_data.get('message', 'Unknown error')}"
             }
+    except requests.exceptions.Timeout:
+        return {
+            "status": "error",
+            "message": "Login timed out after 5 minutes. Please try again and complete the browser login promptly."
+        }
+    except requests.exceptions.ConnectionError:
+        return {
+            "status": "error",
+            "message": "Cannot connect to TIDAL backend service. The MCP server may need to be restarted."
+        }
     except Exception as e:
         return {
             "status": "error",
@@ -70,7 +89,7 @@ def get_favorite_tracks(limit: int = 20) -> dict:
     """
     try:
         # First, check if the user is authenticated
-        auth_check = requests.get(f"{FLASK_APP_URL}/api/auth/status")
+        auth_check = requests.get(f"{FLASK_APP_URL}/api/auth/status", timeout=REQUEST_TIMEOUT)
         auth_data = auth_check.json()
 
         if not auth_data.get("authenticated", False):
@@ -80,7 +99,7 @@ def get_favorite_tracks(limit: int = 20) -> dict:
             }
 
         # Call your Flask endpoint to retrieve tracks with the specified limit
-        response = requests.get(f"{FLASK_APP_URL}/api/tracks", params={"limit": limit})
+        response = requests.get(f"{FLASK_APP_URL}/api/tracks", params={"limit": limit}, timeout=REQUEST_TIMEOUT)
 
         # Check if the request was successful
         if response.status_code == 200:
@@ -96,11 +115,141 @@ def get_favorite_tracks(limit: int = 20) -> dict:
                 "status": "error",
                 "message": f"Failed to retrieve tracks: {error_data.get('error', 'Unknown error')}"
             }
+    except requests.exceptions.Timeout:
+        return {
+            "status": "error",
+            "message": f"Request timed out after {REQUEST_TIMEOUT}s. The TIDAL backend may be unresponsive."
+        }
+    except requests.exceptions.ConnectionError:
+        return {
+            "status": "error",
+            "message": "Cannot connect to TIDAL backend service. The MCP server may need to be restarted."
+        }
     except Exception as e:
         return {
             "status": "error",
             "message": f"Failed to connect to TIDAL tracks service: {str(e)}"
         }
+
+
+@mcp.tool()
+def search_tidal(query: str, search_type: str = "all", limit: int = 50) -> dict:
+    """
+    Search TIDAL's catalog for tracks, albums, artists, and playlists.
+
+    USE THIS TOOL WHENEVER A USER ASKS FOR:
+    - "Search for [song/album/artist name]"
+    - "Find [song name] on TIDAL"
+    - "Look up [artist name]"
+    - "Search TIDAL for [query]"
+    - "Find albums by [artist]"
+    - Any request to search or find music in TIDAL's catalog
+
+    When processing the results of this tool:
+    1. Present the top_hit first if available - this is TIDAL's most relevant result
+    2. Group results by type (tracks, albums, artists, playlists)
+    3. Include the TIDAL URL for each result so users can easily access them
+    4. For tracks, include artist and album information
+    5. For albums, include artist and track count
+    6. Format results in a clear, readable manner
+
+    Args:
+        query: Search query (e.g., "Bohemian Rhapsody", "Radiohead", "Dark Side of the Moon")
+        search_type: Type of content to search for:
+                    - "track" - Search only for tracks/songs
+                    - "album" - Search only for albums
+                    - "artist" - Search only for artists
+                    - "playlist" - Search only for playlists
+                    - "all" (default) - Search all content types
+        limit: Maximum number of results per type (default: 50, max: 300)
+
+    Returns:
+        Dictionary with search results organized by type (tracks, albums, artists, playlists)
+        and an optional top_hit for the most relevant result
+    """
+    # Check authentication
+    try:
+        auth_check = requests.get(f"{FLASK_APP_URL}/api/auth/status", timeout=REQUEST_TIMEOUT)
+        auth_data = auth_check.json()
+
+        if not auth_data.get("authenticated", False):
+            return {
+                "status": "error",
+                "message": "You need to login to TIDAL first. Please use the tidal_login() function."
+            }
+    except requests.exceptions.Timeout:
+        return {
+            "status": "error",
+            "message": f"Request timed out after {REQUEST_TIMEOUT}s. The TIDAL backend may be unresponsive."
+        }
+    except requests.exceptions.ConnectionError:
+        return {
+            "status": "error",
+            "message": "Cannot connect to TIDAL backend service. The MCP server may need to be restarted."
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Failed to check authentication status: {str(e)}"
+        }
+
+    # Validate search_type
+    valid_types = ["track", "album", "artist", "playlist", "all"]
+    if search_type.lower() not in valid_types:
+        return {
+            "status": "error",
+            "message": f"Invalid search_type '{search_type}'. Must be one of: {', '.join(valid_types)}"
+        }
+
+    # Validate query
+    if not query or not query.strip():
+        return {
+            "status": "error",
+            "message": "Search query cannot be empty."
+        }
+
+    try:
+        response = requests.get(
+            f"{FLASK_APP_URL}/api/search",
+            params={"q": query.strip(), "type": search_type.lower(), "limit": limit},
+            timeout=REQUEST_TIMEOUT
+        )
+
+        if response.status_code == 200:
+            result = response.json()
+            return {
+                "status": "success",
+                "query": query,
+                "search_type": search_type,
+                **result
+            }
+        elif response.status_code == 401:
+            return {
+                "status": "error",
+                "message": "Not authenticated with TIDAL. Please login first using tidal_login()."
+            }
+        else:
+            error_data = response.json()
+            return {
+                "status": "error",
+                "message": error_data.get("error", "Search failed")
+            }
+    except requests.exceptions.Timeout:
+        return {
+            "status": "error",
+            "message": f"Search timed out after {REQUEST_TIMEOUT}s. The TIDAL backend may be unresponsive."
+        }
+    except requests.exceptions.ConnectionError:
+        return {
+            "status": "error",
+            "message": "Cannot connect to TIDAL backend service. The MCP server may need to be restarted."
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Failed to search TIDAL: {str(e)}"
+        }
+
 
 def _get_tidal_recommendations(track_ids: list = None, limit_per_track: int = 20, filter_criteria: str = None) -> dict:
     """
@@ -132,7 +281,7 @@ def _get_tidal_recommendations(track_ids: list = None, limit_per_track: int = 20
             "remove_duplicates": True
         }
 
-        response = requests.post(f"{FLASK_APP_URL}/api/recommendations/batch", json=payload)
+        response = requests.post(f"{FLASK_APP_URL}/api/recommendations/batch", json=payload, timeout=60)
 
         if response.status_code != 200:
             error_data = response.json()
@@ -154,6 +303,16 @@ def _get_tidal_recommendations(track_ids: list = None, limit_per_track: int = 20
 
         return result
 
+    except requests.exceptions.Timeout:
+        return {
+            "status": "error",
+            "message": "Recommendations request timed out. Try with fewer seed tracks."
+        }
+    except requests.exceptions.ConnectionError:
+        return {
+            "status": "error",
+            "message": "Cannot connect to TIDAL backend service. The MCP server may need to be restarted."
+        }
     except Exception as e:
         return {
             "status": "error",
@@ -205,8 +364,19 @@ def recommend_tracks(track_ids: Optional[List[str]] = None, filter_criteria: Opt
         A dictionary containing both the seed tracks and recommended tracks
     """
     # First, check if the user is authenticated
-    auth_check = requests.get(f"{FLASK_APP_URL}/api/auth/status")
-    auth_data = auth_check.json()
+    try:
+        auth_check = requests.get(f"{FLASK_APP_URL}/api/auth/status", timeout=REQUEST_TIMEOUT)
+        auth_data = auth_check.json()
+    except requests.exceptions.Timeout:
+        return {
+            "status": "error",
+            "message": f"Request timed out after {REQUEST_TIMEOUT}s. The TIDAL backend may be unresponsive."
+        }
+    except requests.exceptions.ConnectionError:
+        return {
+            "status": "error",
+            "message": "Cannot connect to TIDAL backend service. The MCP server may need to be restarted."
+        }
 
     if not auth_data.get("authenticated", False):
         return {
@@ -324,7 +494,7 @@ def create_tidal_playlist(title: str, track_ids: list, description: str = "") ->
     """
     try:
         # First, check if the user is authenticated
-        auth_check = requests.get(f"{FLASK_APP_URL}/api/auth/status")
+        auth_check = requests.get(f"{FLASK_APP_URL}/api/auth/status", timeout=REQUEST_TIMEOUT)
         auth_data = auth_check.json()
 
         if not auth_data.get("authenticated", False):
@@ -353,7 +523,7 @@ def create_tidal_playlist(title: str, track_ids: list, description: str = "") ->
             "track_ids": track_ids
         }
 
-        response = requests.post(f"{FLASK_APP_URL}/api/playlists", json=payload)
+        response = requests.post(f"{FLASK_APP_URL}/api/playlists", json=payload, timeout=30)
 
         # Check response
         if response.status_code != 200:
@@ -380,6 +550,16 @@ def create_tidal_playlist(title: str, track_ids: list, description: str = "") ->
             "playlist": playlist_data
         }
 
+    except requests.exceptions.Timeout:
+        return {
+            "status": "error",
+            "message": "Playlist creation timed out. The TIDAL backend may be unresponsive."
+        }
+    except requests.exceptions.ConnectionError:
+        return {
+            "status": "error",
+            "message": "Cannot connect to TIDAL backend service. The MCP server may need to be restarted."
+        }
     except Exception as e:
         return {
             "status": "error",
@@ -412,8 +592,19 @@ def get_user_playlists() -> dict:
         A dictionary containing the user's playlists sorted by last updated date
     """
     # First, check if the user is authenticated
-    auth_check = requests.get(f"{FLASK_APP_URL}/api/auth/status")
-    auth_data = auth_check.json()
+    try:
+        auth_check = requests.get(f"{FLASK_APP_URL}/api/auth/status", timeout=REQUEST_TIMEOUT)
+        auth_data = auth_check.json()
+    except requests.exceptions.Timeout:
+        return {
+            "status": "error",
+            "message": f"Request timed out after {REQUEST_TIMEOUT}s. The TIDAL backend may be unresponsive."
+        }
+    except requests.exceptions.ConnectionError:
+        return {
+            "status": "error",
+            "message": "Cannot connect to TIDAL backend service. The MCP server may need to be restarted."
+        }
 
     if not auth_data.get("authenticated", False):
         return {
@@ -422,8 +613,9 @@ def get_user_playlists() -> dict:
         }
 
     try:
-        # Call the Flask endpoint to retrieve playlists with the specified limit
-        response = requests.get(f"{FLASK_APP_URL}/api/playlists")
+        # Call the Flask endpoint to retrieve playlists
+        # Use extended timeout since users may have many playlists (200+)
+        response = requests.get(f"{FLASK_APP_URL}/api/playlists", timeout=EXTENDED_TIMEOUT)
 
         # Check if the request was successful
         if response.status_code == 200:
@@ -443,6 +635,16 @@ def get_user_playlists() -> dict:
                 "status": "error",
                 "message": f"Failed to retrieve playlists: {error_data.get('error', 'Unknown error')}"
             }
+    except requests.exceptions.Timeout:
+        return {
+            "status": "error",
+            "message": f"Request timed out after {EXTENDED_TIMEOUT}s. You may have many playlists - try again."
+        }
+    except requests.exceptions.ConnectionError:
+        return {
+            "status": "error",
+            "message": "Cannot connect to TIDAL backend service. The MCP server may need to be restarted."
+        }
     except Exception as e:
         return {
             "status": "error",
@@ -481,8 +683,19 @@ def get_playlist_tracks(playlist_id: str, limit: int = 100) -> dict:
         A dictionary containing the playlist information and all tracks in the playlist
     """
     # First, check if the user is authenticated
-    auth_check = requests.get(f"{FLASK_APP_URL}/api/auth/status")
-    auth_data = auth_check.json()
+    try:
+        auth_check = requests.get(f"{FLASK_APP_URL}/api/auth/status", timeout=REQUEST_TIMEOUT)
+        auth_data = auth_check.json()
+    except requests.exceptions.Timeout:
+        return {
+            "status": "error",
+            "message": f"Request timed out after {REQUEST_TIMEOUT}s. The TIDAL backend may be unresponsive."
+        }
+    except requests.exceptions.ConnectionError:
+        return {
+            "status": "error",
+            "message": "Cannot connect to TIDAL backend service. The MCP server may need to be restarted."
+        }
 
     if not auth_data.get("authenticated", False):
         return {
@@ -501,7 +714,8 @@ def get_playlist_tracks(playlist_id: str, limit: int = 100) -> dict:
         # Call the Flask endpoint to retrieve tracks from the playlist
         response = requests.get(
             f"{FLASK_APP_URL}/api/playlists/{playlist_id}/tracks",
-            params={"limit": limit}
+            params={"limit": limit},
+            timeout=REQUEST_TIMEOUT
         )
 
         # Check if the request was successful
@@ -528,6 +742,16 @@ def get_playlist_tracks(playlist_id: str, limit: int = 100) -> dict:
                 "status": "error",
                 "message": f"Failed to retrieve playlist tracks: {error_data.get('error', 'Unknown error')}"
             }
+    except requests.exceptions.Timeout:
+        return {
+            "status": "error",
+            "message": f"Request timed out after {REQUEST_TIMEOUT}s. The TIDAL backend may be unresponsive."
+        }
+    except requests.exceptions.ConnectionError:
+        return {
+            "status": "error",
+            "message": "Cannot connect to TIDAL backend service. The MCP server may need to be restarted."
+        }
     except Exception as e:
         return {
             "status": "error",
@@ -561,8 +785,19 @@ def delete_tidal_playlist(playlist_id: str) -> dict:
         A dictionary containing the status of the playlist deletion
     """
     # First, check if the user is authenticated
-    auth_check = requests.get(f"{FLASK_APP_URL}/api/auth/status")
-    auth_data = auth_check.json()
+    try:
+        auth_check = requests.get(f"{FLASK_APP_URL}/api/auth/status", timeout=REQUEST_TIMEOUT)
+        auth_data = auth_check.json()
+    except requests.exceptions.Timeout:
+        return {
+            "status": "error",
+            "message": f"Request timed out after {REQUEST_TIMEOUT}s. The TIDAL backend may be unresponsive."
+        }
+    except requests.exceptions.ConnectionError:
+        return {
+            "status": "error",
+            "message": "Cannot connect to TIDAL backend service. The MCP server may need to be restarted."
+        }
 
     if not auth_data.get("authenticated", False):
         return {
@@ -579,7 +814,7 @@ def delete_tidal_playlist(playlist_id: str) -> dict:
 
     try:
         # Call the Flask endpoint to delete the playlist
-        response = requests.delete(f"{FLASK_APP_URL}/api/playlists/{playlist_id}")
+        response = requests.delete(f"{FLASK_APP_URL}/api/playlists/{playlist_id}", timeout=REQUEST_TIMEOUT)
 
         # Check if the request was successful
         if response.status_code == 200:
@@ -600,6 +835,16 @@ def delete_tidal_playlist(playlist_id: str) -> dict:
                 "status": "error",
                 "message": f"Failed to delete playlist: {error_data.get('error', 'Unknown error')}"
             }
+    except requests.exceptions.Timeout:
+        return {
+            "status": "error",
+            "message": f"Request timed out after {REQUEST_TIMEOUT}s. The TIDAL backend may be unresponsive."
+        }
+    except requests.exceptions.ConnectionError:
+        return {
+            "status": "error",
+            "message": "Cannot connect to TIDAL backend service. The MCP server may need to be restarted."
+        }
     except Exception as e:
         return {
             "status": "error",
@@ -643,7 +888,7 @@ def download_track(track_id: str) -> dict:
     """
     try:
         # Check if tdn is installed first
-        status_check = requests.get(f"{FLASK_APP_URL}/api/download/status")
+        status_check = requests.get(f"{FLASK_APP_URL}/api/download/status", timeout=REQUEST_TIMEOUT)
         status_data = status_check.json()
 
         if not status_data.get("installed", False):
@@ -725,7 +970,7 @@ def download_album(album_id: str) -> dict:
     """
     try:
         # Check if tdn is installed first
-        status_check = requests.get(f"{FLASK_APP_URL}/api/download/status")
+        status_check = requests.get(f"{FLASK_APP_URL}/api/download/status", timeout=REQUEST_TIMEOUT)
         status_data = status_check.json()
 
         if not status_data.get("installed", False):
@@ -809,7 +1054,7 @@ def download_playlist(playlist_id: str) -> dict:
     """
     try:
         # Check if tdn is installed first
-        status_check = requests.get(f"{FLASK_APP_URL}/api/download/status")
+        status_check = requests.get(f"{FLASK_APP_URL}/api/download/status", timeout=REQUEST_TIMEOUT)
         status_data = status_check.json()
 
         if not status_data.get("installed", False):
@@ -903,7 +1148,7 @@ def download_favorites(favorite_type: str = "tracks") -> dict:
             }
 
         # Check if tdn is installed first
-        status_check = requests.get(f"{FLASK_APP_URL}/api/download/status")
+        status_check = requests.get(f"{FLASK_APP_URL}/api/download/status", timeout=REQUEST_TIMEOUT)
         status_data = status_check.json()
 
         if not status_data.get("installed", False):

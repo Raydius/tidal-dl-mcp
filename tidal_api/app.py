@@ -1,12 +1,15 @@
 import os
+import sys
 import tempfile
 import functools
 
+import tidalapi
+from tidalapi.types import ItemOrder, OrderDirection
 from flask import Flask, request, jsonify
 from pathlib import Path
 
 from browser_session import BrowserSession
-from utils import format_track_data, bound_limit
+from utils import format_track_data, format_album_data, format_artist_data, format_playlist_data, bound_limit
 from download_utils import (
     check_tdn_installed,
     execute_tdn_download,
@@ -42,6 +45,15 @@ def requires_tidal_auth(f):
     return decorated_function
 
 
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    """
+    Simple health check endpoint to verify Flask backend is running.
+    Used by MCP server to verify Flask started successfully.
+    """
+    return jsonify({"status": "ok"}), 200
+
+
 @app.route('/api/auth/login', methods=['GET'])
 def login():
     """
@@ -52,7 +64,7 @@ def login():
     session = BrowserSession()
 
     def log_message(msg):
-        print(f"TIDAL AUTH: {msg}")
+        print(f"TIDAL AUTH: {msg}", file=sys.stderr, flush=True)
 
     # Try to authenticate (will open browser if needed)
     try:
@@ -130,12 +142,76 @@ def get_tracks(session: BrowserSession):
         # Get limit from query parameter, default to 10 if not specified
         limit = bound_limit(request.args.get('limit', default=10, type=int))
 
-        tracks = favorites.tracks(limit=limit, order="DATE", order_direction="DESC")
+        tracks = favorites.tracks(limit=limit, order=ItemOrder.Date, order_direction=OrderDirection.Descending)
         track_list = [format_track_data(track) for track in tracks]
 
         return jsonify({"tracks": track_list})
     except Exception as e:
         return jsonify({"error": f"Error fetching tracks: {str(e)}"}), 500
+
+
+@app.route('/api/search', methods=['GET'])
+@requires_tidal_auth
+def search(session: BrowserSession):
+    """
+    Search TIDAL for tracks, albums, artists, and playlists.
+
+    Query parameters:
+        q: Search query (required)
+        type: Type of content to search for - track, album, artist, playlist, or all (default: all)
+        limit: Maximum number of results per type (default: 50, max: 300)
+    """
+    query = request.args.get('q', '')
+    search_type = request.args.get('type', 'all').lower()
+    limit = bound_limit(request.args.get('limit', default=50, type=int), max_n=300)
+
+    if not query:
+        return jsonify({"error": "Query parameter 'q' is required"}), 400
+
+    try:
+        # Map search types to tidalapi models
+        model_map = {
+            'track': [tidalapi.Track],
+            'album': [tidalapi.Album],
+            'artist': [tidalapi.Artist],
+            'playlist': [tidalapi.Playlist],
+            'all': None  # None searches all types
+        }
+
+        models = model_map.get(search_type)
+        if search_type not in model_map:
+            return jsonify({"error": f"Invalid search type '{search_type}'. Must be one of: track, album, artist, playlist, all"}), 400
+
+        results = session.search(query, models=models, limit=limit)
+
+        response = {}
+
+        # Handle top_hit - determine type and format appropriately
+        top_hit = results.get('top_hit')
+        if top_hit:
+            # Check the type and format appropriately
+            if isinstance(top_hit, tidalapi.media.Track):
+                response['top_hit'] = {'type': 'track', 'data': format_track_data(top_hit)}
+            elif isinstance(top_hit, tidalapi.album.Album):
+                response['top_hit'] = {'type': 'album', 'data': format_album_data(top_hit)}
+            elif isinstance(top_hit, tidalapi.artist.Artist):
+                response['top_hit'] = {'type': 'artist', 'data': format_artist_data(top_hit)}
+            elif isinstance(top_hit, tidalapi.playlist.Playlist):
+                response['top_hit'] = {'type': 'playlist', 'data': format_playlist_data(top_hit)}
+
+        # Format each result type (results is a dict, not an object)
+        if results.get('tracks'):
+            response['tracks'] = [format_track_data(t) for t in results['tracks']]
+        if results.get('albums'):
+            response['albums'] = [format_album_data(a) for a in results['albums']]
+        if results.get('artists'):
+            response['artists'] = [format_artist_data(a) for a in results['artists']]
+        if results.get('playlists'):
+            response['playlists'] = [format_playlist_data(p) for p in results['playlists']]
+
+        return jsonify(response)
+    except Exception as e:
+        return jsonify({"error": f"Search failed: {str(e)}"}), 500
 
 
 @app.route('/api/recommendations/track/<track_id>', methods=['GET'])
@@ -198,7 +274,7 @@ def get_batch_recommendations(session: BrowserSession):
                 ]
                 return formatted_recommendations
             except Exception as e:
-                print(f"Error getting recommendations for track {track_id}: {str(e)}")
+                print(f"Error getting recommendations for track {track_id}: {str(e)}", file=sys.stderr, flush=True)
                 return []
 
         all_recommendations = []
@@ -550,5 +626,5 @@ if __name__ == '__main__':
     # Get port from environment variable or use default
     port = int(os.environ.get("TIDAL_MCP_PORT", 5050))
 
-    print(f"Starting Flask app on port {port}")
+    print(f"Starting Flask app on port {port}", file=sys.stderr, flush=True)
     app.run(debug=True, port=port)
