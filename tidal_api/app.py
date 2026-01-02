@@ -414,18 +414,29 @@ def get_user_playlists(session: BrowserSession):
 def get_playlist_tracks(playlist_id: str, session: BrowserSession):
     """
     Get tracks from a specific TIDAL playlist.
+
+    Query parameters:
+        limit: Maximum number of tracks to return (default: 100, max: 500)
+        offset: Starting index for pagination (default: 0)
     """
     try:
-        # Get limit from query parameter, default to 100 if not specified
-        limit = bound_limit(request.args.get('limit', default=100, type=int))
+        # Get limit and offset from query parameters
+        # Allow up to 500 tracks per request for comprehensive playlist retrieval
+        limit = bound_limit(request.args.get('limit', default=100, type=int), max_n=500)
+        offset = request.args.get('offset', default=0, type=int)
+        if offset < 0:
+            offset = 0
 
         # Get the playlist object
         playlist = session.playlist(playlist_id)
         if not playlist:
             return jsonify({"error": f"Playlist with ID {playlist_id} not found"}), 404
 
-        # Get tracks from the playlist with pagination if needed
-        tracks = playlist.items(limit=limit)
+        # Get total track count from playlist metadata
+        total_available = playlist.num_tracks if hasattr(playlist, 'num_tracks') else 0
+
+        # Get tracks from the playlist with pagination
+        tracks = playlist.items(limit=limit, offset=offset)
 
         # Format track data
         track_list = [format_track_data(track) for track in tracks]
@@ -433,7 +444,10 @@ def get_playlist_tracks(playlist_id: str, session: BrowserSession):
         return jsonify({
             "playlist_id": playlist.id,
             "tracks": track_list,
-            "total_tracks": len(track_list)
+            "total_tracks": len(track_list),
+            "total_available": total_available,
+            "offset": offset,
+            "limit": limit
         })
 
     except Exception as e:

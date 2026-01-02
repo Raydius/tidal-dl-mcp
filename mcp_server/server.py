@@ -653,9 +653,9 @@ def get_user_playlists() -> dict:
 
 
 @mcp.tool()
-def get_playlist_tracks(playlist_id: str, limit: int = 100) -> dict:
+def get_playlist_tracks(playlist_id: str, limit: int = 100, offset: int = 0) -> dict:
     """
-    Retrieves all tracks from a specified TIDAL playlist.
+    Retrieves tracks from a specified TIDAL playlist with pagination support.
 
     USE THIS TOOL WHENEVER A USER ASKS FOR:
     - "Show me the songs in my playlist"
@@ -665,22 +665,28 @@ def get_playlist_tracks(playlist_id: str, limit: int = 100) -> dict:
     - "View contents of my TIDAL playlist"
     - Any request to see what songs/tracks are in a specific playlist
 
-    This function retrieves all tracks from a specific playlist in the user's TIDAL account.
+    This function retrieves tracks from a specific playlist in the user's TIDAL account.
     The playlist_id must be provided, which can be obtained from the get_user_playlists() function.
+
+    PAGINATION: For large playlists, use the offset parameter to get additional tracks.
+    The response includes 'total_available' showing the total tracks in the playlist.
+    If total_available > track_count, call again with offset incremented by the limit
+    to get the next batch (e.g., first call offset=0, second call offset=100, etc.)
 
     When processing the results of this tool:
     1. Present the playlist information (title, description, track count) as context
     2. List the tracks in a clear, organized format with track name, artist, and album
     3. Include track durations where available
-    4. Mention the total number of tracks in the playlist
+    4. Check total_available vs track_count to know if there are more tracks
     5. If there are many tracks, focus on highlighting interesting patterns or variety
 
     Args:
         playlist_id: The TIDAL ID of the playlist to retrieve (required)
-        limit: Maximum number of tracks to retrieve (default: 100)
+        limit: Maximum number of tracks to retrieve per request (default: 100, max: 500)
+        offset: Starting index for pagination (default: 0). Use to get additional tracks.
 
     Returns:
-        A dictionary containing the playlist information and all tracks in the playlist
+        A dictionary containing tracks, track_count (returned), total_available (in playlist), offset, and limit
     """
     # First, check if the user is authenticated
     try:
@@ -714,7 +720,7 @@ def get_playlist_tracks(playlist_id: str, limit: int = 100) -> dict:
         # Call the Flask endpoint to retrieve tracks from the playlist
         response = requests.get(
             f"{FLASK_APP_URL}/api/playlists/{playlist_id}/tracks",
-            params={"limit": limit},
+            params={"limit": limit, "offset": offset},
             timeout=REQUEST_TIMEOUT
         )
 
@@ -724,7 +730,10 @@ def get_playlist_tracks(playlist_id: str, limit: int = 100) -> dict:
             return {
                 "status": "success",
                 "tracks": data.get("tracks", []),
-                "track_count": data.get("total_tracks", 0)
+                "track_count": data.get("total_tracks", 0),
+                "total_available": data.get("total_available", 0),
+                "offset": data.get("offset", 0),
+                "limit": data.get("limit", limit)
             }
         elif response.status_code == 404:
             return {
