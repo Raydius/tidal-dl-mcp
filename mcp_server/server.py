@@ -568,6 +568,112 @@ def create_tidal_playlist(title: str, track_ids: list, description: str = "") ->
 
 
 @mcp.tool()
+def add_tracks_to_playlist(playlist_id: str, track_ids: list, allow_duplicates: bool = False) -> dict:
+    """
+    Adds tracks to an existing TIDAL playlist.
+
+    USE THIS TOOL WHENEVER A USER ASKS FOR:
+    - "Add this song to my playlist"
+    - "Put these tracks in my [playlist name] playlist"
+    - "Add this to my favorites playlist"
+    - "Include this track in my workout playlist"
+    - Any request to add songs/tracks to an existing playlist
+
+    This function adds one or more tracks to a playlist that already exists in the user's TIDAL account.
+    The playlist_id must be provided, which can be obtained from the get_user_playlists() function.
+
+    When processing the results of this tool:
+    1. Confirm how many tracks were successfully added
+    2. If allow_duplicates is False and some tracks were already in the playlist, they won't be added again
+    3. Mention the playlist name and provide a link to it
+
+    Args:
+        playlist_id: The TIDAL ID of the playlist to add tracks to (required)
+        track_ids: List of TIDAL track IDs to add to the playlist (required)
+        allow_duplicates: If False (default), tracks already in the playlist won't be added again
+
+    Returns:
+        A dictionary containing the status and number of tracks added
+    """
+    try:
+        # First, check if the user is authenticated
+        auth_check = requests.get(f"{FLASK_APP_URL}/api/auth/status", timeout=REQUEST_TIMEOUT)
+        auth_data = auth_check.json()
+
+        if not auth_data.get("authenticated", False):
+            return {
+                "status": "error",
+                "message": "You need to login to TIDAL first before adding tracks to a playlist. Please use the tidal_login() function."
+            }
+
+        # Validate inputs
+        if not playlist_id:
+            return {
+                "status": "error",
+                "message": "Playlist ID is required. You can get playlist IDs by using the get_user_playlists() function."
+            }
+
+        if not track_ids or not isinstance(track_ids, list) or len(track_ids) == 0:
+            return {
+                "status": "error",
+                "message": "You must provide at least one track ID to add to the playlist."
+            }
+
+        # Add tracks through the Flask API
+        payload = {
+            "track_ids": track_ids,
+            "allow_duplicates": allow_duplicates
+        }
+
+        response = requests.post(
+            f"{FLASK_APP_URL}/api/playlists/{playlist_id}/tracks",
+            json=payload,
+            timeout=30
+        )
+
+        # Check response
+        if response.status_code == 404:
+            return {
+                "status": "error",
+                "message": f"Playlist with ID {playlist_id} not found. Please check the playlist ID and try again."
+            }
+
+        if response.status_code != 200:
+            error_data = response.json()
+            return {
+                "status": "error",
+                "message": f"Failed to add tracks to playlist: {error_data.get('error', 'Unknown error')}"
+            }
+
+        # Parse the response
+        result = response.json()
+
+        return {
+            "status": "success",
+            "message": result.get("message", f"Added tracks to playlist"),
+            "playlist_id": playlist_id,
+            "playlist_url": f"https://tidal.com/playlist/{playlist_id}",
+            "tracks_added": result.get("tracks_added", 0)
+        }
+
+    except requests.exceptions.Timeout:
+        return {
+            "status": "error",
+            "message": "Request timed out. The TIDAL backend may be unresponsive."
+        }
+    except requests.exceptions.ConnectionError:
+        return {
+            "status": "error",
+            "message": "Cannot connect to TIDAL backend service. The MCP server may need to be restarted."
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Failed to add tracks to playlist: {str(e)}"
+        }
+
+
+@mcp.tool()
 def get_user_playlists() -> dict:
     """
     Fetches the user's playlists from their TIDAL account.

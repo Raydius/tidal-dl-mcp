@@ -372,6 +372,56 @@ def create_playlist(session: BrowserSession):
         return jsonify({"error": f"Error creating playlist: {str(e)}"}), 500
 
 
+@app.route('/api/playlists/<playlist_id>/tracks', methods=['POST'])
+@requires_tidal_auth
+def add_tracks_to_playlist(playlist_id: str, session: BrowserSession):
+    """
+    Add tracks to an existing TIDAL playlist.
+
+    Expected JSON payload:
+    {
+        "track_ids": [123456789, 987654321, ...],
+        "allow_duplicates": false  // optional, defaults to false
+    }
+
+    Returns the number of tracks added.
+    """
+    try:
+        # Get request data
+        request_data = request.get_json()
+        if not request_data:
+            return jsonify({"error": "Missing request body"}), 400
+
+        # Validate required fields
+        if 'track_ids' not in request_data or not request_data['track_ids']:
+            return jsonify({"error": "Missing 'track_ids' in request body or empty track list"}), 400
+
+        track_ids = request_data['track_ids']
+        allow_duplicates = request_data.get('allow_duplicates', False)
+
+        # Validate track_ids is a list
+        if not isinstance(track_ids, list):
+            return jsonify({"error": "'track_ids' must be a list"}), 400
+
+        # Get the playlist
+        playlist = session.playlist(playlist_id)
+        if not playlist:
+            return jsonify({"error": f"Playlist with ID {playlist_id} not found"}), 404
+
+        # Add tracks to the playlist
+        added_ids = playlist.add(track_ids, allow_duplicates=allow_duplicates)
+
+        return jsonify({
+            "status": "success",
+            "message": f"Added {len(added_ids)} tracks to playlist",
+            "playlist_id": playlist_id,
+            "tracks_added": len(added_ids)
+        })
+
+    except Exception as e:
+        return jsonify({"error": f"Error adding tracks to playlist: {str(e)}"}), 500
+
+
 @app.route('/api/playlists', methods=['GET'])
 @requires_tidal_auth
 def get_user_playlists(session: BrowserSession):

@@ -101,6 +101,11 @@ Once configured, you can interact with your TIDAL account through a LLM by askin
 - *"Create a playlist based on my top tracks, but focused on chill, late-night vibes."*
 - *"Find songs like these in playlist XYZ but in languages other than English."*
 
+**Playlist Management Examples:**
+- *"Add this track to my workout playlist"*
+- *"Put these songs in my 90's playlist"*
+- *"Show me all tracks in my road trip playlist"*
+
 *💡 You can also ask the model to:*
 - Use more tracks as seeds to broaden the inspiration.
 - Return more recommendations if you want a longer playlist.
@@ -121,8 +126,9 @@ The TIDAL MCP integration provides the following tools:
 - `get_favorite_tracks`: Retrieve your favorite tracks from TIDAL
 - `recommend_tracks`: Get personalized music recommendations
 - `create_tidal_playlist`: Create a new playlist in your TIDAL account
+- `add_tracks_to_playlist`: Add tracks to an existing playlist
 - `get_user_playlists`: List all your playlists on TIDAL
-- `get_playlist_tracks`: Retrieve all tracks from a specific playlist
+- `get_playlist_tracks`: Retrieve tracks from a playlist (supports pagination with offset/limit for large playlists)
 - `delete_tidal_playlist`: Delete a playlist from your TIDAL account
 
 **Download Tools** (requires tidal-dl-ng):
