@@ -1,5 +1,6 @@
 from mcp.server.fastmcp import FastMCP
 import requests
+from requests.adapters import HTTPAdapter
 import atexit
 import sys
 
@@ -10,6 +11,11 @@ from utils import start_flask_app, shutdown_flask_app, FLASK_APP_URL, FLASK_PORT
 # Timeout for Flask backend requests (seconds)
 # This prevents tools from hanging indefinitely if Flask is unresponsive
 REQUEST_TIMEOUT = 15
+
+# HTTP session with connection pooling for efficient communication with Flask backend
+# Reuses TCP connections across requests, significantly reducing overhead for batch operations
+http_session = requests.Session()
+http_session.mount('http://', HTTPAdapter(pool_connections=10, pool_maxsize=10))
 
 # Extended timeout for operations that may take longer (fetching many playlists, etc.)
 EXTENDED_TIMEOUT = 60
@@ -39,7 +45,7 @@ def tidal_login() -> dict:
     try:
         # Call your Flask endpoint for TIDAL authentication
         # Use longer timeout (5 min) since user needs to complete OAuth in browser
-        response = requests.get(f"{FLASK_APP_URL}/api/auth/login", timeout=300)
+        response = http_session.get(f"{FLASK_APP_URL}/api/auth/login", timeout=300)
 
         # Check if the request was successful
         if response.status_code == 200:
@@ -88,18 +94,8 @@ def get_favorite_tracks(limit: int = 20) -> dict:
         Returns an error message if not authenticated or if retrieval fails.
     """
     try:
-        # First, check if the user is authenticated
-        auth_check = requests.get(f"{FLASK_APP_URL}/api/auth/status", timeout=REQUEST_TIMEOUT)
-        auth_data = auth_check.json()
-
-        if not auth_data.get("authenticated", False):
-            return {
-                "status": "error",
-                "message": "You need to login to TIDAL first before I can fetch your favorite tracks. Please use the tidal_login() function."
-            }
-
-        # Call your Flask endpoint to retrieve tracks with the specified limit
-        response = requests.get(f"{FLASK_APP_URL}/api/tracks", params={"limit": limit}, timeout=REQUEST_TIMEOUT)
+        # Call Flask endpoint to retrieve tracks - auth is handled by Flask
+        response = http_session.get(f"{FLASK_APP_URL}/api/tracks", params={"limit": limit}, timeout=REQUEST_TIMEOUT)
 
         # Check if the request was successful
         if response.status_code == 200:
@@ -130,6 +126,24 @@ def get_favorite_tracks(limit: int = 20) -> dict:
             "status": "error",
             "message": f"Failed to connect to TIDAL tracks service: {str(e)}"
         }
+
+
+def _check_auth_error(response) -> dict:
+    """Helper to check for auth errors in response. Returns error dict if 401, None otherwise."""
+    if response.status_code == 401:
+        return {
+            "status": "error",
+            "message": "Not authenticated with TIDAL. Please login first using tidal_login()."
+        }
+    return None
+
+
+def _safe_json(response, default=None):
+    """Safely parse JSON from response, returning default if parsing fails."""
+    try:
+        return response.json()
+    except Exception:
+        return default if default is not None else {}
 
 
 @mcp.tool()
@@ -167,32 +181,6 @@ def search_tidal(query: str, search_type: str = "all", limit: int = 50) -> dict:
         Dictionary with search results organized by type (tracks, albums, artists, playlists)
         and an optional top_hit for the most relevant result
     """
-    # Check authentication
-    try:
-        auth_check = requests.get(f"{FLASK_APP_URL}/api/auth/status", timeout=REQUEST_TIMEOUT)
-        auth_data = auth_check.json()
-
-        if not auth_data.get("authenticated", False):
-            return {
-                "status": "error",
-                "message": "You need to login to TIDAL first. Please use the tidal_login() function."
-            }
-    except requests.exceptions.Timeout:
-        return {
-            "status": "error",
-            "message": f"Request timed out after {REQUEST_TIMEOUT}s. The TIDAL backend may be unresponsive."
-        }
-    except requests.exceptions.ConnectionError:
-        return {
-            "status": "error",
-            "message": "Cannot connect to TIDAL backend service. The MCP server may need to be restarted."
-        }
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": f"Failed to check authentication status: {str(e)}"
-        }
-
     # Validate search_type
     valid_types = ["track", "album", "artist", "playlist", "all"]
     if search_type.lower() not in valid_types:
@@ -209,11 +197,15 @@ def search_tidal(query: str, search_type: str = "all", limit: int = 50) -> dict:
         }
 
     try:
-        response = requests.get(
+        response = http_session.get(
             f"{FLASK_APP_URL}/api/search",
             params={"q": query.strip(), "type": search_type.lower(), "limit": limit},
             timeout=REQUEST_TIMEOUT
         )
+
+        auth_error = _check_auth_error(response)
+        if auth_error:
+            return auth_error
 
         if response.status_code == 200:
             result = response.json()
@@ -222,11 +214,6 @@ def search_tidal(query: str, search_type: str = "all", limit: int = 50) -> dict:
                 "query": query,
                 "search_type": search_type,
                 **result
-            }
-        elif response.status_code == 401:
-            return {
-                "status": "error",
-                "message": "Not authenticated with TIDAL. Please login first using tidal_login()."
             }
         else:
             error_data = response.json()
@@ -249,6 +236,250 @@ def search_tidal(query: str, search_type: str = "all", limit: int = 50) -> dict:
             "status": "error",
             "message": f"Failed to search TIDAL: {str(e)}"
         }
+
+
+@mcp.tool()
+def batch_search_tidal(queries: List[dict], limit_per_query: int = 5) -> dict:
+    """
+    Search TIDAL for multiple tracks/albums/artists in a single request.
+    This is MUCH MORE EFFICIENT than calling search_tidal multiple times.
+
+    USE THIS TOOL WHEN:
+    - You need to search for multiple songs to create a playlist
+    - You have a list of song names to look up
+    - You're building a collection of tracks based on a user's description
+    - The user provides a list of songs they want to find
+
+    This tool processes all searches concurrently, making it 10-50x faster than
+    calling search_tidal repeatedly for each song.
+
+    When processing the results:
+    1. Check each result for the 'tracks' array with matching songs
+    2. Use the first track in each result as the best match
+    3. Some queries may have 'error' instead of results - handle gracefully
+    4. Collect track IDs for playlist creation
+
+    Args:
+        queries: List of search queries. Each item can be:
+                 - A string: "Bohemian Rhapsody Queen" (searches for tracks)
+                 - A dict with 'query' and optional 'type':
+                   {"query": "Bohemian Rhapsody", "type": "track"}
+                 Valid types: "track", "album", "artist", "playlist", "all"
+                 Default type is "track" if not specified.
+                 Maximum 100 queries per request.
+        limit_per_query: Maximum results per query (default: 5, max: 20)
+                        Keep this low (1-5) for faster responses when you only need the best match.
+
+    Returns:
+        Dictionary with 'results' array containing search results for each query.
+        Each result includes the original query and matching tracks/albums/etc.
+
+    Example:
+        batch_search_tidal([
+            {"query": "Bohemian Rhapsody Queen", "type": "track"},
+            {"query": "Yesterday Beatles", "type": "track"},
+            "Stairway to Heaven"  # String queries default to track type
+        ], limit_per_query=1)
+    """
+    try:
+        if not queries or not isinstance(queries, list):
+            return {"status": "error", "message": "queries must be a non-empty list"}
+
+        if len(queries) > 100:
+            return {"status": "error", "message": "Maximum 100 queries per batch request"}
+
+        # Normalize queries to consistent format
+        normalized_queries = []
+        for q in queries:
+            if isinstance(q, str):
+                normalized_queries.append({"query": q, "type": "track"})
+            elif isinstance(q, dict) and q.get("query"):
+                normalized_queries.append({
+                    "query": q["query"],
+                    "type": q.get("type", "track")
+                })
+
+        if not normalized_queries:
+            return {"status": "error", "message": "No valid queries provided"}
+
+        response = http_session.post(
+            f"{FLASK_APP_URL}/api/search/batch",
+            json={"queries": normalized_queries, "limit_per_query": min(max(1, limit_per_query), 20)},
+            timeout=EXTENDED_TIMEOUT  # Use extended timeout for batch
+        )
+
+        auth_error = _check_auth_error(response)
+        if auth_error:
+            return auth_error
+
+        if response.status_code == 200:
+            data = _safe_json(response)
+            if not data:
+                return {"status": "error", "message": "Empty response from batch search - Flask may have crashed"}
+            return {"status": "success", **data}
+        else:
+            error_data = _safe_json(response)
+            return {"status": "error", "message": error_data.get("error", f"Batch search failed (HTTP {response.status_code})")}
+
+    except requests.exceptions.Timeout:
+        return {"status": "error", "message": "Batch search timed out. Try with fewer queries."}
+    except requests.exceptions.ConnectionError:
+        return {"status": "error", "message": "Cannot connect to TIDAL backend service."}
+    except Exception as e:
+        return {"status": "error", "message": f"Batch search failed: {str(e)}"}
+
+
+@mcp.tool()
+def create_playlist_from_songs(
+    title: str,
+    song_descriptions: List[str],
+    description: str = ""
+) -> dict:
+    """
+    Creates a TIDAL playlist by searching for songs and adding the best matches.
+    This is the RECOMMENDED way to create a playlist when you have song names/descriptions.
+
+    USE THIS TOOL WHEN:
+    - A user provides a list of song names to add to a playlist
+    - You need to create a playlist from song descriptions (not track IDs)
+    - You want to build a playlist based on user-provided song names
+
+    This tool handles the entire workflow efficiently:
+    1. Batch search for all songs concurrently
+    2. Collect the best matching track IDs
+    3. Create the playlist with all found tracks
+
+    This is MUCH faster than searching for songs one-by-one and then creating a playlist.
+
+    Args:
+        title: Name for the new playlist
+        song_descriptions: List of song descriptions to search for.
+                          Include artist name for better matching.
+                          Examples: ["Bohemian Rhapsody by Queen", "Yesterday Beatles",
+                                    "Stairway to Heaven Led Zeppelin"]
+                          Maximum 100 songs per request.
+        description: Optional playlist description
+
+    Returns:
+        Dictionary with:
+        - playlist: Created playlist details including URL
+        - matched_songs: List of songs that were found with their track info
+        - unmatched_songs: List of songs that couldn't be found
+        - match_rate: e.g., "45/50" showing how many songs were matched
+
+    Example:
+        create_playlist_from_songs(
+            title="My 80s Favorites",
+            song_descriptions=[
+                "Take On Me a-ha",
+                "Livin' on a Prayer Bon Jovi",
+                "Sweet Child O' Mine Guns N' Roses"
+            ],
+            description="Classic 80s hits"
+        )
+    """
+    # Validate inputs
+    if not title:
+        return {"status": "error", "message": "Playlist title is required"}
+
+    if not song_descriptions or not isinstance(song_descriptions, list):
+        return {"status": "error", "message": "song_descriptions must be a non-empty list"}
+
+    if len(song_descriptions) > 100:
+        return {"status": "error", "message": "Maximum 100 songs per playlist creation"}
+
+    try:
+        # Step 1: Batch search for all songs
+        queries = [{"query": s, "type": "track"} for s in song_descriptions if s]
+        search_response = http_session.post(
+            f"{FLASK_APP_URL}/api/search/batch",
+            json={"queries": queries, "limit_per_query": 1},  # Only need best match
+            timeout=EXTENDED_TIMEOUT
+        )
+
+        auth_error = _check_auth_error(search_response)
+        if auth_error:
+            return auth_error
+
+        if search_response.status_code != 200:
+            error_data = _safe_json(search_response)
+            error_msg = error_data.get('error', f"HTTP {search_response.status_code}")
+            return {"status": "error", "message": f"Failed to search for songs: {error_msg}"}
+
+        search_data = _safe_json(search_response)
+        if not search_data:
+            return {"status": "error", "message": "Empty response from search - Flask may have crashed"}
+
+        # Step 2: Collect track IDs and track matched/unmatched songs
+        track_ids = []
+        matched_songs = []
+        unmatched_songs = []
+
+        for result in search_data.get("results", []):
+            query = result.get("query", "")
+            tracks = result.get("tracks", [])
+
+            if tracks and len(tracks) > 0:
+                track = tracks[0]
+                track_id = track.get("id")
+                if track_id:
+                    track_ids.append(track_id)
+                    matched_songs.append({
+                        "query": query,
+                        "matched_track": track.get("title", "Unknown"),
+                        "matched_artist": track.get("artist", "Unknown"),
+                        "track_id": track_id,
+                        "url": track.get("url", "")
+                    })
+            else:
+                unmatched_songs.append(query)
+
+        if not track_ids:
+            return {
+                "status": "error",
+                "message": "Could not find any matching tracks on TIDAL",
+                "unmatched_songs": unmatched_songs
+            }
+
+        # Step 3: Create the playlist with found tracks
+        create_response = http_session.post(
+            f"{FLASK_APP_URL}/api/playlists",
+            json={"title": title, "description": description, "track_ids": track_ids},
+            timeout=30
+        )
+
+        auth_error = _check_auth_error(create_response)
+        if auth_error:
+            return auth_error
+
+        if create_response.status_code != 200:
+            error_data = _safe_json(create_response)
+            error_msg = error_data.get('error', f"HTTP {create_response.status_code}")
+            return {"status": "error", "message": f"Failed to create playlist: {error_msg}"}
+
+        playlist_data = _safe_json(create_response)
+        if not playlist_data:
+            return {"status": "error", "message": "Empty response from playlist creation - Flask may have crashed"}
+        playlist_info = playlist_data.get("playlist", {})
+
+        return {
+            "status": "success",
+            "message": f"Created playlist '{title}' with {len(track_ids)} tracks",
+            "playlist": {
+                **playlist_info,
+                "playlist_url": f"https://tidal.com/playlist/{playlist_info.get('id')}"
+            },
+            "matched_songs": matched_songs,
+            "unmatched_songs": unmatched_songs,
+            "match_rate": f"{len(matched_songs)}/{len(song_descriptions)}"
+        }
+
+    except requests.exceptions.Timeout:
+        return {"status": "error", "message": "Request timed out. Try with fewer songs."}
+    except requests.exceptions.ConnectionError:
+        return {"status": "error", "message": "Cannot connect to TIDAL backend service."}
+    except Exception as e:
+        return {"status": "error", "message": f"Failed to create playlist: {str(e)}"}
 
 
 def _get_tidal_recommendations(track_ids: list = None, limit_per_track: int = 20, filter_criteria: str = None) -> dict:
@@ -281,7 +512,7 @@ def _get_tidal_recommendations(track_ids: list = None, limit_per_track: int = 20
             "remove_duplicates": True
         }
 
-        response = requests.post(f"{FLASK_APP_URL}/api/recommendations/batch", json=payload, timeout=60)
+        response = http_session.post(f"{FLASK_APP_URL}/api/recommendations/batch", json=payload, timeout=60)
 
         if response.status_code != 200:
             error_data = response.json()
@@ -363,27 +594,6 @@ def recommend_tracks(track_ids: Optional[List[str]] = None, filter_criteria: Opt
     Returns:
         A dictionary containing both the seed tracks and recommended tracks
     """
-    # First, check if the user is authenticated
-    try:
-        auth_check = requests.get(f"{FLASK_APP_URL}/api/auth/status", timeout=REQUEST_TIMEOUT)
-        auth_data = auth_check.json()
-    except requests.exceptions.Timeout:
-        return {
-            "status": "error",
-            "message": f"Request timed out after {REQUEST_TIMEOUT}s. The TIDAL backend may be unresponsive."
-        }
-    except requests.exceptions.ConnectionError:
-        return {
-            "status": "error",
-            "message": "Cannot connect to TIDAL backend service. The MCP server may need to be restarted."
-        }
-
-    if not auth_data.get("authenticated", False):
-        return {
-            "status": "error",
-            "message": "You need to login to TIDAL first before I can recommend music. Please use the tidal_login() function."
-        }
-
     # Initialize variables to store our seed tracks and their info
     seed_track_ids = []
     seed_tracks_info = []
@@ -492,30 +702,20 @@ def create_tidal_playlist(title: str, track_ids: list, description: str = "") ->
     Returns:
         A dictionary containing the status of the playlist creation and details about the created playlist
     """
+    # Validate inputs
+    if not title:
+        return {
+            "status": "error",
+            "message": "Playlist title cannot be empty."
+        }
+
+    if not track_ids or not isinstance(track_ids, list) or len(track_ids) == 0:
+        return {
+            "status": "error",
+            "message": "You must provide at least one track ID to add to the playlist."
+        }
+
     try:
-        # First, check if the user is authenticated
-        auth_check = requests.get(f"{FLASK_APP_URL}/api/auth/status", timeout=REQUEST_TIMEOUT)
-        auth_data = auth_check.json()
-
-        if not auth_data.get("authenticated", False):
-            return {
-                "status": "error",
-                "message": "You need to login to TIDAL first before creating a playlist. Please use the tidal_login() function."
-            }
-
-        # Validate inputs
-        if not title:
-            return {
-                "status": "error",
-                "message": "Playlist title cannot be empty."
-            }
-
-        if not track_ids or not isinstance(track_ids, list) or len(track_ids) == 0:
-            return {
-                "status": "error",
-                "message": "You must provide at least one track ID to add to the playlist."
-            }
-
         # Create the playlist through the Flask API
         payload = {
             "title": title,
@@ -523,7 +723,11 @@ def create_tidal_playlist(title: str, track_ids: list, description: str = "") ->
             "track_ids": track_ids
         }
 
-        response = requests.post(f"{FLASK_APP_URL}/api/playlists", json=payload, timeout=30)
+        response = http_session.post(f"{FLASK_APP_URL}/api/playlists", json=payload, timeout=30)
+
+        auth_error = _check_auth_error(response)
+        if auth_error:
+            return auth_error
 
         # Check response
         if response.status_code != 200:
@@ -595,41 +799,35 @@ def add_tracks_to_playlist(playlist_id: str, track_ids: list, allow_duplicates: 
     Returns:
         A dictionary containing the status and number of tracks added
     """
+    # Validate inputs
+    if not playlist_id:
+        return {
+            "status": "error",
+            "message": "Playlist ID is required. You can get playlist IDs by using the get_user_playlists() function."
+        }
+
+    if not track_ids or not isinstance(track_ids, list) or len(track_ids) == 0:
+        return {
+            "status": "error",
+            "message": "You must provide at least one track ID to add to the playlist."
+        }
+
     try:
-        # First, check if the user is authenticated
-        auth_check = requests.get(f"{FLASK_APP_URL}/api/auth/status", timeout=REQUEST_TIMEOUT)
-        auth_data = auth_check.json()
-
-        if not auth_data.get("authenticated", False):
-            return {
-                "status": "error",
-                "message": "You need to login to TIDAL first before adding tracks to a playlist. Please use the tidal_login() function."
-            }
-
-        # Validate inputs
-        if not playlist_id:
-            return {
-                "status": "error",
-                "message": "Playlist ID is required. You can get playlist IDs by using the get_user_playlists() function."
-            }
-
-        if not track_ids or not isinstance(track_ids, list) or len(track_ids) == 0:
-            return {
-                "status": "error",
-                "message": "You must provide at least one track ID to add to the playlist."
-            }
-
         # Add tracks through the Flask API
         payload = {
             "track_ids": track_ids,
             "allow_duplicates": allow_duplicates
         }
 
-        response = requests.post(
+        response = http_session.post(
             f"{FLASK_APP_URL}/api/playlists/{playlist_id}/tracks",
             json=payload,
             timeout=30
         )
+
+        auth_error = _check_auth_error(response)
+        if auth_error:
+            return auth_error
 
         # Check response
         if response.status_code == 404:
@@ -697,43 +895,22 @@ def get_user_playlists() -> dict:
     Returns:
         A dictionary containing the user's playlists sorted by last updated date
     """
-    # First, check if the user is authenticated
-    try:
-        auth_check = requests.get(f"{FLASK_APP_URL}/api/auth/status", timeout=REQUEST_TIMEOUT)
-        auth_data = auth_check.json()
-    except requests.exceptions.Timeout:
-        return {
-            "status": "error",
-            "message": f"Request timed out after {REQUEST_TIMEOUT}s. The TIDAL backend may be unresponsive."
-        }
-    except requests.exceptions.ConnectionError:
-        return {
-            "status": "error",
-            "message": "Cannot connect to TIDAL backend service. The MCP server may need to be restarted."
-        }
-
-    if not auth_data.get("authenticated", False):
-        return {
-            "status": "error",
-            "message": "You need to login to TIDAL first before I can fetch your playlists. Please use the tidal_login() function."
-        }
-
     try:
         # Call the Flask endpoint to retrieve playlists
         # Use extended timeout since users may have many playlists (200+)
-        response = requests.get(f"{FLASK_APP_URL}/api/playlists", timeout=EXTENDED_TIMEOUT)
+        response = http_session.get(f"{FLASK_APP_URL}/api/playlists", timeout=EXTENDED_TIMEOUT)
+
+        auth_error = _check_auth_error(response)
+        if auth_error:
+            return auth_error
 
         # Check if the request was successful
         if response.status_code == 200:
+            data = response.json()
             return {
                 "status": "success",
-                "playlists": response.json().get("playlists", []),
-                "playlist_count": len(response.json().get("playlists", []))
-            }
-        elif response.status_code == 401:
-            return {
-                "status": "error",
-                "message": "Not authenticated with TIDAL. Please login first using tidal_login()."
+                "playlists": data.get("playlists", []),
+                "playlist_count": len(data.get("playlists", []))
             }
         else:
             error_data = response.json()
@@ -794,27 +971,6 @@ def get_playlist_tracks(playlist_id: str, limit: int = 100, offset: int = 0) -> 
     Returns:
         A dictionary containing tracks, track_count (returned), total_available (in playlist), offset, and limit
     """
-    # First, check if the user is authenticated
-    try:
-        auth_check = requests.get(f"{FLASK_APP_URL}/api/auth/status", timeout=REQUEST_TIMEOUT)
-        auth_data = auth_check.json()
-    except requests.exceptions.Timeout:
-        return {
-            "status": "error",
-            "message": f"Request timed out after {REQUEST_TIMEOUT}s. The TIDAL backend may be unresponsive."
-        }
-    except requests.exceptions.ConnectionError:
-        return {
-            "status": "error",
-            "message": "Cannot connect to TIDAL backend service. The MCP server may need to be restarted."
-        }
-
-    if not auth_data.get("authenticated", False):
-        return {
-            "status": "error",
-            "message": "You need to login to TIDAL first before I can fetch playlist tracks. Please use the tidal_login() function."
-        }
-
     # Validate playlist_id
     if not playlist_id:
         return {
@@ -824,11 +980,15 @@ def get_playlist_tracks(playlist_id: str, limit: int = 100, offset: int = 0) -> 
 
     try:
         # Call the Flask endpoint to retrieve tracks from the playlist
-        response = requests.get(
+        response = http_session.get(
             f"{FLASK_APP_URL}/api/playlists/{playlist_id}/tracks",
             params={"limit": limit, "offset": offset},
             timeout=REQUEST_TIMEOUT
         )
+
+        auth_error = _check_auth_error(response)
+        if auth_error:
+            return auth_error
 
         # Check if the request was successful
         if response.status_code == 200:
@@ -845,11 +1005,6 @@ def get_playlist_tracks(playlist_id: str, limit: int = 100, offset: int = 0) -> 
             return {
                 "status": "error",
                 "message": f"Playlist with ID {playlist_id} not found. Please check the playlist ID and try again."
-            }
-        elif response.status_code == 401:
-            return {
-                "status": "error",
-                "message": "Not authenticated with TIDAL. Please login first using tidal_login()."
             }
         else:
             error_data = response.json()
@@ -899,27 +1054,6 @@ def delete_tidal_playlist(playlist_id: str) -> dict:
     Returns:
         A dictionary containing the status of the playlist deletion
     """
-    # First, check if the user is authenticated
-    try:
-        auth_check = requests.get(f"{FLASK_APP_URL}/api/auth/status", timeout=REQUEST_TIMEOUT)
-        auth_data = auth_check.json()
-    except requests.exceptions.Timeout:
-        return {
-            "status": "error",
-            "message": f"Request timed out after {REQUEST_TIMEOUT}s. The TIDAL backend may be unresponsive."
-        }
-    except requests.exceptions.ConnectionError:
-        return {
-            "status": "error",
-            "message": "Cannot connect to TIDAL backend service. The MCP server may need to be restarted."
-        }
-
-    if not auth_data.get("authenticated", False):
-        return {
-            "status": "error",
-            "message": "You need to login to TIDAL first before deleting a playlist. Please use the tidal_login() function."
-        }
-
     # Validate playlist_id
     if not playlist_id:
         return {
@@ -929,7 +1063,11 @@ def delete_tidal_playlist(playlist_id: str) -> dict:
 
     try:
         # Call the Flask endpoint to delete the playlist
-        response = requests.delete(f"{FLASK_APP_URL}/api/playlists/{playlist_id}", timeout=REQUEST_TIMEOUT)
+        response = http_session.delete(f"{FLASK_APP_URL}/api/playlists/{playlist_id}", timeout=REQUEST_TIMEOUT)
+
+        auth_error = _check_auth_error(response)
+        if auth_error:
+            return auth_error
 
         # Check if the request was successful
         if response.status_code == 200:
@@ -938,11 +1076,6 @@ def delete_tidal_playlist(playlist_id: str) -> dict:
             return {
                 "status": "error",
                 "message": f"Playlist with ID {playlist_id} not found. Please check the playlist ID and try again."
-            }
-        elif response.status_code == 401:
-            return {
-                "status": "error",
-                "message": "Not authenticated with TIDAL. Please login first using tidal_login()."
             }
         else:
             error_data = response.json()
@@ -1003,7 +1136,7 @@ def download_track(track_id: str) -> dict:
     """
     try:
         # Check if tdn is installed first
-        status_check = requests.get(f"{FLASK_APP_URL}/api/download/status", timeout=REQUEST_TIMEOUT)
+        status_check = http_session.get(f"{FLASK_APP_URL}/api/download/status", timeout=REQUEST_TIMEOUT)
         status_data = status_check.json()
 
         if not status_data.get("installed", False):
@@ -1020,7 +1153,7 @@ def download_track(track_id: str) -> dict:
             }
 
         # Attempt download
-        response = requests.post(
+        response = http_session.post(
             f"{FLASK_APP_URL}/api/download/track",
             json={"track_id": track_id},
             timeout=320
@@ -1085,7 +1218,7 @@ def download_album(album_id: str) -> dict:
     """
     try:
         # Check if tdn is installed first
-        status_check = requests.get(f"{FLASK_APP_URL}/api/download/status", timeout=REQUEST_TIMEOUT)
+        status_check = http_session.get(f"{FLASK_APP_URL}/api/download/status", timeout=REQUEST_TIMEOUT)
         status_data = status_check.json()
 
         if not status_data.get("installed", False):
@@ -1102,7 +1235,7 @@ def download_album(album_id: str) -> dict:
             }
 
         # Attempt download (longer timeout for albums)
-        response = requests.post(
+        response = http_session.post(
             f"{FLASK_APP_URL}/api/download/album",
             json={"album_id": album_id},
             timeout=620
@@ -1169,7 +1302,7 @@ def download_playlist(playlist_id: str) -> dict:
     """
     try:
         # Check if tdn is installed first
-        status_check = requests.get(f"{FLASK_APP_URL}/api/download/status", timeout=REQUEST_TIMEOUT)
+        status_check = http_session.get(f"{FLASK_APP_URL}/api/download/status", timeout=REQUEST_TIMEOUT)
         status_data = status_check.json()
 
         if not status_data.get("installed", False):
@@ -1186,7 +1319,7 @@ def download_playlist(playlist_id: str) -> dict:
             }
 
         # Attempt download (longest timeout for playlists)
-        response = requests.post(
+        response = http_session.post(
             f"{FLASK_APP_URL}/api/download/playlist",
             json={"playlist_id": playlist_id},
             timeout=1220
@@ -1263,7 +1396,7 @@ def download_favorites(favorite_type: str = "tracks") -> dict:
             }
 
         # Check if tdn is installed first
-        status_check = requests.get(f"{FLASK_APP_URL}/api/download/status", timeout=REQUEST_TIMEOUT)
+        status_check = http_session.get(f"{FLASK_APP_URL}/api/download/status", timeout=REQUEST_TIMEOUT)
         status_data = status_check.json()
 
         if not status_data.get("installed", False):
@@ -1273,7 +1406,7 @@ def download_favorites(favorite_type: str = "tracks") -> dict:
             }
 
         # Attempt download (very long timeout for favorites)
-        response = requests.post(
+        response = http_session.post(
             f"{FLASK_APP_URL}/api/download/favorites",
             json={"type": favorite_type.lower()},
             timeout=1820

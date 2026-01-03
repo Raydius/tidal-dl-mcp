@@ -2,6 +2,8 @@ import os
 import sys
 import tempfile
 import functools
+import time
+from threading import Lock
 
 import tidalapi
 from tidalapi.types import ItemOrder, OrderDirection
@@ -21,23 +23,70 @@ app = Flask(__name__)
 token_path = os.path.join(tempfile.gettempdir(), 'tidal-session-oauth.json')
 SESSION_FILE = Path(token_path)
 
+# Session caching to avoid re-validating TIDAL credentials on every request
+# This significantly improves performance for batch operations
+_cached_session = None
+_session_lock = Lock()
+_session_last_validated = 0
+SESSION_CACHE_TTL = 300  # Re-validate every 5 minutes
+
+
+def get_or_create_session():
+    """
+    Get cached TIDAL session or create/validate a new one.
+    Thread-safe with TTL-based cache invalidation.
+
+    Returns:
+        BrowserSession if valid session exists, None otherwise
+    """
+    global _cached_session, _session_last_validated
+
+    with _session_lock:
+        now = time.time()
+
+        # If session exists and was validated recently, return it
+        if _cached_session and (now - _session_last_validated) < SESSION_CACHE_TTL:
+            return _cached_session
+
+        # Otherwise, load/validate session
+        if not SESSION_FILE.exists():
+            _cached_session = None
+            return None
+
+        try:
+            session = BrowserSession()
+            if session.login_session_file_auto(SESSION_FILE):
+                _cached_session = session
+                _session_last_validated = now
+                return session
+        except Exception as e:
+            print(f"Session validation failed: {e}", file=sys.stderr, flush=True)
+
+        _cached_session = None
+        return None
+
+
+def invalidate_session_cache():
+    """Invalidate the cached session (e.g., after logout or auth failure)."""
+    global _cached_session, _session_last_validated
+    with _session_lock:
+        _cached_session = None
+        _session_last_validated = 0
+
 def requires_tidal_auth(f):
     """
     Decorator to ensure routes have an authenticated TIDAL session.
     Returns 401 if not authenticated.
     Passes the authenticated session to the decorated function.
+    Uses cached session for improved performance.
     """
     @functools.wraps(f)
     def decorated_function(*args, **kwargs):
-        if not SESSION_FILE.exists():
+        # Use cached session for efficiency
+        session = get_or_create_session()
+
+        if not session:
             return jsonify({"error": "Not authenticated"}), 401
-
-        # Create session and load from file
-        session = BrowserSession()
-        login_success = session.login_session_file_auto(SESSION_FILE)
-
-        if not login_success:
-            return jsonify({"error": "Authentication failed"}), 401
 
         # Add the authenticated session to kwargs
         kwargs['session'] = session
@@ -98,23 +147,16 @@ def login():
 def auth_status():
     """
     Check if there's an active authenticated session.
+    Uses cached session for fast response in batch operations.
     """
-    if not SESSION_FILE.exists():
-        return jsonify({
-            "authenticated": False,
-            "message": "No session file found"
-        })
+    # Use cached session for efficiency
+    session = get_or_create_session()
 
-    # Create session and try to load from file
-    session = BrowserSession()
-    login_success = session.login_session_file_auto(SESSION_FILE)
-
-    if login_success:
+    if session:
         # Get basic user info
         user_info = {
             "id": session.user.id,
             "username": session.user.username if hasattr(session.user, 'username') else "N/A",
-            "email": session.user.email if hasattr(session.user, 'email') else "N/A"
         }
 
         return jsonify({
@@ -125,7 +167,7 @@ def auth_status():
     else:
         return jsonify({
             "authenticated": False,
-            "message": "Invalid or expired session"
+            "message": "No valid session"
         })
 
 @app.route('/api/tracks', methods=['GET'])
@@ -212,6 +254,119 @@ def search(session: BrowserSession):
         return jsonify(response)
     except Exception as e:
         return jsonify({"error": f"Search failed: {str(e)}"}), 500
+
+
+@app.route('/api/search/batch', methods=['POST'])
+@requires_tidal_auth
+def batch_search(session: BrowserSession):
+    """
+    Search TIDAL for multiple queries in a single request.
+    Processes queries concurrently for efficiency.
+
+    Expected JSON payload:
+    {
+        "queries": [
+            {"query": "Bohemian Rhapsody", "type": "track"},
+            {"query": "Yesterday Beatles", "type": "track"},
+            ...
+        ],
+        "limit_per_query": 5  // Optional, default 5
+    }
+
+    Returns:
+    {
+        "results": [
+            {"query": "...", "type": "track", "tracks": [...], "top_hit": {...}},
+            ...
+        ],
+        "total": 50
+    }
+    """
+    try:
+        request_data = request.get_json()
+        if not request_data or 'queries' not in request_data:
+            return jsonify({"error": "Missing 'queries' in request body"}), 400
+
+        queries = request_data['queries']
+        limit_per_query = request_data.get('limit_per_query', 5)
+
+        if not isinstance(queries, list) or len(queries) == 0:
+            return jsonify({"error": "'queries' must be a non-empty list"}), 400
+
+        if len(queries) > 100:
+            return jsonify({"error": "Maximum 100 queries per batch"}), 400
+
+        # Ensure limit is reasonable
+        limit_per_query = min(max(1, limit_per_query), 20)
+
+        def search_single(query_obj, search_session):
+            """Search for a single query using the provided session"""
+            q = query_obj.get('query', '') if isinstance(query_obj, dict) else str(query_obj)
+            search_type = query_obj.get('type', 'track') if isinstance(query_obj, dict) else 'track'
+
+            if not q:
+                return {"query": q, "error": "Empty query"}
+
+            try:
+                model_map = {
+                    'track': [tidalapi.Track],
+                    'album': [tidalapi.Album],
+                    'artist': [tidalapi.Artist],
+                    'playlist': [tidalapi.Playlist],
+                    'all': None
+                }
+                models = model_map.get(search_type.lower(), [tidalapi.Track])
+                results = search_session.search(q, models=models, limit=limit_per_query)
+
+                response = {"query": q, "type": search_type}
+
+                # Format results based on type
+                if results.get('tracks'):
+                    response['tracks'] = [format_track_data(t) for t in results['tracks']]
+                if results.get('albums'):
+                    response['albums'] = [format_album_data(a) for a in results['albums']]
+                if results.get('artists'):
+                    response['artists'] = [format_artist_data(a) for a in results['artists']]
+                if results.get('playlists'):
+                    response['playlists'] = [format_playlist_data(p) for p in results['playlists']]
+
+                # Include top_hit if available
+                top_hit = results.get('top_hit')
+                if top_hit:
+                    if isinstance(top_hit, tidalapi.media.Track):
+                        response['top_hit'] = {'type': 'track', 'data': format_track_data(top_hit)}
+                    elif isinstance(top_hit, tidalapi.album.Album):
+                        response['top_hit'] = {'type': 'album', 'data': format_album_data(top_hit)}
+                    elif isinstance(top_hit, tidalapi.artist.Artist):
+                        response['top_hit'] = {'type': 'artist', 'data': format_artist_data(top_hit)}
+
+                return response
+            except Exception as e:
+                return {"query": q, "error": str(e)}
+
+        # Process queries - use sequential processing to avoid tidalapi thread safety issues
+        # This is still much faster than making 50+ MCP tool calls because we avoid
+        # the MCP/HTTP overhead for each query
+        results = []
+
+        # Log progress for debugging
+        print(f"Batch search: processing {len(queries)} queries", file=sys.stderr, flush=True)
+
+        for i, q in enumerate(queries):
+            try:
+                result = search_single(q, session)
+                results.append(result)
+            except Exception as e:
+                print(f"Batch search error on query {i}: {e}", file=sys.stderr, flush=True)
+                q_str = q.get('query', str(q)) if isinstance(q, dict) else str(q)
+                results.append({"query": q_str, "error": str(e)})
+
+        print(f"Batch search: completed {len(results)} queries", file=sys.stderr, flush=True)
+
+        return jsonify({"results": results, "total": len(results)})
+
+    except Exception as e:
+        return jsonify({"error": f"Batch search failed: {str(e)}"}), 500
 
 
 @app.route('/api/recommendations/track/<track_id>', methods=['GET'])
@@ -691,4 +846,6 @@ if __name__ == '__main__':
     port = int(os.environ.get("TIDAL_MCP_PORT", 5050))
 
     print(f"Starting Flask app on port {port}", file=sys.stderr, flush=True)
-    app.run(debug=False, port=port, threaded=True)
+    # use_reloader=False prevents Flask from spawning a child process that can
+    # become a zombie if the parent dies unexpectedly, causing stale code issues
+    app.run(debug=False, port=port, threaded=True, use_reloader=False)

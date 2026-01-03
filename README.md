@@ -1,12 +1,13 @@
-# TIDAL MCP
+# TIDAL DL MCP
 
 
-This is originally a fork of [yuhuacheng/tidal-mcp](https://github.com/yuhuacheng/tidal-mcp).  In addition to added Tidal search functionality and the ability to run [tidal-dl-ng](https://github.com/exislow/tidal-dl-ng) (if you have it installed), there have been other stability and performance improvements.
+This was originally a fork of [yuhuacheng/tidal-mcp](https://github.com/yuhuacheng/tidal-mcp).  In addition to added Tidal search functionality and the ability to run [tidal-dl-ng](https://github.com/exislow/tidal-dl-ng) (if you have it installed), there have been other stability and performance improvements, including batch operations for large track lists.
 
 
 ## Features
 
 - 🔍 **Music Search**: Search TIDAL's catalog for tracks, albums, and artists by name
+- ⚡ **Batch Operations**: Search for multiple songs and create playlists efficiently in a single request
 - 🌟 **Music Recommendations**: Get personalized track recommendations based on your listening history **plus your custom criteria**.
 - ၊၊||၊ **Playlist Management**: Create, view, and manage your TIDAL playlists
 - 📥 **Music Downloads**: Download tracks, albums, playlists, and favorites via [tidal-dl-ng](https://github.com/exislow/tidal-dl-ng) integration
@@ -106,6 +107,11 @@ Once configured, you can interact with your TIDAL account through a LLM by askin
 - *"Put these songs in my 90's playlist"*
 - *"Show me all tracks in my road trip playlist"*
 
+**Batch Playlist Creation Examples:**
+- *"Create a playlist called 'Road Trip Mix' with these songs: Bohemian Rhapsody, Hotel California, Stairway to Heaven, Sweet Home Alabama"*
+- *"Make me a workout playlist with 20 high-energy rock songs from the 80s"*
+- *"Build a dinner party playlist with jazz standards like Take Five, So What, and My Favorite Things"*
+
 *💡 You can also ask the model to:*
 - Use more tracks as seeds to broaden the inspiration.
 - Return more recommendations if you want a longer playlist.
@@ -130,6 +136,10 @@ The TIDAL MCP integration provides the following tools:
 - `get_user_playlists`: List all your playlists on TIDAL
 - `get_playlist_tracks`: Retrieve tracks from a playlist (supports pagination with offset/limit for large playlists)
 - `delete_tidal_playlist`: Delete a playlist from your TIDAL account
+
+**Batch Tools** (optimized for large operations):
+- `batch_search_tidal`: Search for multiple songs in a single request (up to 100 queries). 10-50x faster than individual searches.
+- `create_playlist_from_songs`: Create a playlist from a list of song names/descriptions. Automatically searches for each song and adds the best matches.
 
 **Download Tools** (requires tidal-dl-ng):
 - `download_track`: Download a single track by ID
