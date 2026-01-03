@@ -88,13 +88,15 @@ def start_flask_app():
     print(f"Using uv executable: {uv_executable}", file=sys.stderr, flush=True)
 
     # Start the Flask app using uv
+    # Stream output to stderr instead of capturing to a pipe - prevents buffer deadlock
+    # when the MCP server blocks on HTTP requests without draining the pipe
     flask_process = subprocess.Popen([
         uv_executable, "run",
         "--with", "tidalapi",
         "--with", "flask",
         "--with", "requests",
         "python", FLASK_APP_PATH
-    ], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    ], stdout=sys.stderr, stderr=sys.stderr)
 
     # Wait for Flask to start listening on the port (with timeout)
     print(f"Waiting for Flask to start on port {FLASK_PORT}...", file=sys.stderr, flush=True)
@@ -105,9 +107,8 @@ def start_flask_app():
     while time.time() - start_time < FLASK_STARTUP_TIMEOUT:
         # Check if process crashed
         if not _check_process_alive(flask_process):
-            # Process died - read any output for debugging
-            output = flask_process.stdout.read().decode() if flask_process.stdout else ""
-            print(f"Flask process exited unexpectedly. Output: {output[:500]}", file=sys.stderr, flush=True)
+            # Process died - output already went to stderr, just report the exit code
+            print(f"Flask process exited unexpectedly. Exit code: {flask_process.returncode}", file=sys.stderr, flush=True)
             raise RuntimeError(f"Flask backend failed to start. Exit code: {flask_process.returncode}")
 
         # Check if port is listening
