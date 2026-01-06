@@ -1,7 +1,12 @@
-# TIDAL DL MCP
+# TIDAL Music MCP
 
+[![Claude Code](https://img.shields.io/badge/Claude%20Code-MCP%20Server-orange)](https://docs.anthropic.com/en/docs/claude-code)
+[![MCP](https://img.shields.io/badge/MCP-Model%20Context%20Protocol-blue)](https://modelcontextprotocol.io)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
+[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+[![uv](https://img.shields.io/badge/uv-Package%20Manager-green)](https://github.com/astral-sh/uv)
 
-This was originally a fork of [yuhuacheng/tidal-mcp](https://github.com/yuhuacheng/tidal-mcp).  In addition to added Tidal search functionality and the ability to run [tidal-dl-ng](https://github.com/exislow/tidal-dl-ng) (if you have it installed), there have been other stability and performance improvements, including batch operations for large track lists.
+This was originally a fork of [yuhuacheng/tidal-mcp](https://github.com/yuhuacheng/tidal-mcp) but has grown into a more robust implementation of Tidal features.  In addition to added Tidal search functionality and the ability to run [tidal-dl-ng](https://github.com/exislow/tidal-dl-ng) (if you have it installed), there have been other stability and performance improvements, including batch operations for large track lists.
 
 
 ## Features
@@ -146,6 +151,17 @@ The TIDAL MCP integration provides the following tools:
 - `download_album`: Download an entire album by ID
 - `download_playlist`: Download all tracks from a playlist
 - `download_favorites`: Download all favorites (tracks, albums, artists, or videos)
+
+## Security & Privacy
+
+This application accesses your TIDAL account data (favorites, playlists, search history) through TIDAL's official API. Key security notes:
+
+- **OAuth tokens** are stored in your system's temp directory (`<temp>/tidal-session-oauth.json`)
+- **Network binding** is localhost-only (127.0.0.1) - not accessible from other machines
+- **No telemetry** - your data is never sent to third parties
+- **Third-party libraries** - uses community-maintained [tidalapi](https://github.com/tamland/python-tidal), not an official TIDAL SDK
+
+See [SECURITY.md](SECURITY.md) for full details on data access, storage, and reporting vulnerabilities.
 
 ## Troubleshooting
 

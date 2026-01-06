@@ -10,6 +10,18 @@ wheels/
 .venv 
 nul
 
+# Log files
+*.log
+firebase-debug.log
+
+# Environment files
+.env
+.env.*
+.env.local
+
+# Session files
+*-session*.json
+
 # Others
 play.ipynb
 
