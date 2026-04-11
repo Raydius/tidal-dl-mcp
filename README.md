@@ -6,7 +6,7 @@
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![uv](https://img.shields.io/badge/uv-Package%20Manager-green)](https://github.com/astral-sh/uv)
 
-This was originally a fork of [yuhuacheng/tidal-mcp](https://github.com/yuhuacheng/tidal-mcp) but has grown into a more robust implementation of Tidal features.  In addition to added Tidal search functionality and the ability to run [tidal-dl-ng](https://github.com/exislow/tidal-dl-ng) (if you have it installed), there have been other stability and performance improvements, including batch operations for large track lists.
+This was originally a fork of [yuhuacheng/tidal-mcp](https://github.com/yuhuacheng/tidal-mcp) but has grown into a more robust implementation of Tidal features.  In addition to added Tidal search functionality and the ability to run tidal-dl-ng (if you have it installed), there have been other stability and performance improvements, including batch operations for large track lists.
 
 
 ## Features
@@ -15,7 +15,7 @@ This was originally a fork of [yuhuacheng/tidal-mcp](https://github.com/yuhuache
 - ⚡ **Batch Operations**: Search for multiple songs and create playlists efficiently in a single request
 - 🌟 **Music Recommendations**: Get personalized track recommendations based on your listening history **plus your custom criteria**.
 - ၊၊||၊ **Playlist Management**: Create, view, and manage your TIDAL playlists
-- 📥 **Music Downloads**: Download tracks, albums, playlists, and favorites via [tidal-dl-ng](https://github.com/exislow/tidal-dl-ng) integration
+- 📥 **Music Downloads**: Download tracks, albums, playlists, and favorites via tidal-dl-ng integration
 
 ## Quick Start
 
@@ -24,7 +24,6 @@ This was originally a fork of [yuhuacheng/tidal-mcp](https://github.com/yuhuache
 - Python 3.10+
 - [uv](https://github.com/astral-sh/uv) (Python package manager)
 - TIDAL subscription
-- (Optional, for downloads) [tidal-dl-ng](https://github.com/exislow/tidal-dl-ng) - Install with `pipx install tidal-dl-ng`
 
 ### Installation
 
@@ -36,16 +35,6 @@ This was originally a fork of [yuhuacheng/tidal-mcp](https://github.com/yuhuache
 
 2. **Important**: Do NOT create a virtual environment or run `uv pip install --editable .` in this directory. Claude Desktop uses `uv run` with `--with` flags to create an isolated environment automatically. Having a local `.venv` or editable install can cause version conflicts and hangs.
 
-3. (Optional) Set up tidal-dl-ng for download functionality:
-   ```bash
-   # Install tidal-dl-ng
-   pipx install tidal-dl-ng
-
-   # Authenticate with TIDAL (opens browser for OAuth)
-   tdn login
-   ```
-
-   **Note**: tidal-dl-ng uses its own authentication, separate from the MCP's TIDAL API auth. You'll need to authenticate both if you want to use all features.
 
 
 ## MCP Client Configuration
@@ -200,6 +189,5 @@ If the MCP server hangs when Claude Desktop tries to call tools:
 ## Acknowledgements
 
 - [yuhuacheng/tidal-mcp](https://github.com/yuhuacheng/tidal-mcp) - Original TIDAL MCP implementation
-- [tidal-dl-ng](https://github.com/exislow/tidal-dl-ng) by exislow - TIDAL download functionality
 - [Model Context Protocol (MCP)](https://github.com/modelcontextprotocol/python-sdk)
 - [TIDAL Python API](https://github.com/tamland/python-tidal)
