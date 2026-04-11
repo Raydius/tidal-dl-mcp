@@ -36,41 +36,74 @@ atexit.register(shutdown_flask_app)
 @mcp.tool()
 def tidal_login() -> dict:
     """
-    Authenticate with TIDAL through browser login flow.
-    This will open a browser window for the user to log in to their TIDAL account.
+    Initiate TIDAL authentication. Returns an auth URL for the user to open manually.
+    After opening the URL and completing login, call tidal_login_complete() to finish.
+    If already authenticated, returns success immediately.
+
+    Returns:
+        A dictionary containing auth URL and instructions, or success if already authenticated
+    """
+    try:
+        response = http_session.post(
+            f"{FLASK_APP_URL}/api/auth/login/init",
+            timeout=REQUEST_TIMEOUT
+        )
+        data = response.json()
+
+        if response.status_code == 200:
+            if data.get("status") == "already_authenticated":
+                return data
+            # pending — return URL for user
+            return {
+                "status": "pending",
+                "message": f"Please open this URL to authenticate with TIDAL: {data['auth_url']}\n"
+                           f"The link expires in {data['expires_in']} seconds.\n"
+                           f"After completing login in the browser, call tidal_login_complete().",
+                "auth_url": data["auth_url"],
+                "expires_in": data["expires_in"]
+            }
+        else:
+            return {"status": "error", "message": data.get("message", "Login init failed")}
+    except requests.exceptions.ConnectionError:
+        return {"status": "error", "message": "Cannot connect to TIDAL backend service."}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@mcp.tool()
+def tidal_login_complete(timeout: int = 300) -> dict:
+    """
+    Complete a pending TIDAL authentication. Call this after the user has opened
+    the auth URL from tidal_login() and completed the browser login.
+
+    Args:
+        timeout: Maximum seconds to wait for authentication completion (default: 300)
 
     Returns:
         A dictionary containing authentication status and user information if successful
     """
     try:
-        # Call your Flask endpoint for TIDAL authentication
-        # Use longer timeout (5 min) since user needs to complete OAuth in browser
-        response = http_session.get(f"{FLASK_APP_URL}/api/auth/login", timeout=300)
+        response = http_session.post(
+            f"{FLASK_APP_URL}/api/auth/login/complete",
+            json={"timeout": timeout},
+            timeout=timeout + 10  # HTTP timeout > auth timeout for clean error
+        )
+        data = response.json()
 
-        # Check if the request was successful
         if response.status_code == 200:
-            return response.json()
+            return data
+        elif response.status_code == 400:
+            return {"status": "error", "message": data.get("message", "No pending login. Call tidal_login() first.")}
+        elif response.status_code == 408:
+            return {"status": "error", "message": data.get("message", "Authentication timed out.")}
         else:
-            error_data = response.json()
-            return {
-                "status": "error",
-                "message": f"Authentication failed: {error_data.get('message', 'Unknown error')}"
-            }
+            return {"status": "error", "message": data.get("message", "Login completion failed")}
     except requests.exceptions.Timeout:
-        return {
-            "status": "error",
-            "message": "Login timed out after 5 minutes. Please try again and complete the browser login promptly."
-        }
+        return {"status": "error", "message": f"Request timed out after {timeout}s."}
     except requests.exceptions.ConnectionError:
-        return {
-            "status": "error",
-            "message": "Cannot connect to TIDAL backend service. The MCP server may need to be restarted."
-        }
+        return {"status": "error", "message": "Cannot connect to TIDAL backend service."}
     except Exception as e:
-        return {
-            "status": "error",
-            "message": f"Failed to connect to TIDAL authentication service: {str(e)}"
-        }
+        return {"status": "error", "message": str(e)}
 
 @mcp.tool()
 def get_favorite_tracks(limit: int = 20) -> dict:

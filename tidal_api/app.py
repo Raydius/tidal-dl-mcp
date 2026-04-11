@@ -30,6 +30,10 @@ _session_lock = Lock()
 _session_last_validated = 0
 SESSION_CACHE_TTL = 300  # Re-validate every 5 minutes
 
+# Pending OAuth state for two-phase login
+_pending_oauth = None        # Tuple: (BrowserSession, future) or None
+_pending_oauth_lock = Lock()
+
 
 def get_or_create_session():
     """
@@ -55,7 +59,8 @@ def get_or_create_session():
 
         try:
             session = BrowserSession()
-            if session.login_session_file_auto(SESSION_FILE):
+            session.load_session_from_file(SESSION_FILE)
+            if session.check_login():
                 _cached_session = session
                 _session_last_validated = now
                 return session
@@ -103,44 +108,106 @@ def health_check():
     return jsonify({"status": "ok"}), 200
 
 
-@app.route('/api/auth/login', methods=['GET'])
-def login():
+@app.route('/api/auth/login/init', methods=['POST'])
+def login_init():
     """
-    Initiates the TIDAL authentication process.
-    Automatically opens a browser for the user to login to their TIDAL account.
+    Initiate TIDAL OAuth login. Returns an auth URL for the user to open manually.
+    Does not open a browser automatically.
     """
-    # Create our custom session object
-    session = BrowserSession()
+    global _pending_oauth, _cached_session, _session_last_validated
 
-    def log_message(msg):
-        print(f"TIDAL AUTH: {msg}", file=sys.stderr, flush=True)
-
-    # Try to authenticate (will open browser if needed)
     try:
-        login_success = session.login_session_file_auto(SESSION_FILE, fn_print=log_message)
-
-        if login_success:
+        # Check if already authenticated
+        session = get_or_create_session()
+        if session:
             return jsonify({
-                "status": "success",
-                "message": "Successfully authenticated with TIDAL",
+                "status": "already_authenticated",
+                "message": "Already authenticated with TIDAL",
                 "user_id": session.user.id
             })
-        else:
-            return jsonify({
-                "status": "error",
-                "message": "Authentication failed"
-            }), 401
 
-    except TimeoutError:
+        # Start a new OAuth flow (no browser opening)
+        session = BrowserSession()
+        login, future = session.login_oauth()
+
+        # Build auth URL (same logic as browser_session.py)
+        auth_url = login.verification_uri_complete
+        if not auth_url.startswith('http'):
+            auth_url = 'https://' + auth_url
+
+        with _pending_oauth_lock:
+            _pending_oauth = (session, future)
+
         return jsonify({
-            "status": "error",
-            "message": "Authentication timed out"
-        }), 408
+            "status": "pending",
+            "auth_url": auth_url,
+            "expires_in": login.expires_in
+        })
 
     except Exception as e:
         return jsonify({
             "status": "error",
             "message": str(e)
+        }), 500
+
+
+@app.route('/api/auth/login/complete', methods=['POST'])
+def login_complete():
+    """
+    Complete a pending TIDAL OAuth login. Call after the user has opened
+    the auth URL and completed login in the browser.
+    """
+    global _pending_oauth, _cached_session, _session_last_validated
+
+    request_data = request.get_json() or {}
+    timeout = request_data.get('timeout', 300)
+
+    with _pending_oauth_lock:
+        if _pending_oauth is None:
+            return jsonify({
+                "status": "error",
+                "message": "No pending login. Call /api/auth/login/init first."
+            }), 400
+        session, future = _pending_oauth
+
+    try:
+        from concurrent.futures import TimeoutError as FutureTimeoutError
+        future.result(timeout=timeout)
+    except FutureTimeoutError:
+        with _pending_oauth_lock:
+            _pending_oauth = None
+        return jsonify({
+            "status": "error",
+            "message": f"Authentication timed out after {timeout} seconds."
+        }), 408
+    except Exception as e:
+        with _pending_oauth_lock:
+            _pending_oauth = None
+        return jsonify({
+            "status": "error",
+            "message": f"Authentication failed: {str(e)}"
+        }), 500
+
+    # Success — save session and update cache
+    try:
+        session.save_session_to_file(SESSION_FILE)
+        with _session_lock:
+            _cached_session = session
+            _session_last_validated = time.time()
+        with _pending_oauth_lock:
+            _pending_oauth = None
+
+        return jsonify({
+            "status": "success",
+            "message": "Successfully authenticated with TIDAL",
+            "user_id": session.user.id
+        })
+    except Exception as e:
+        with _pending_oauth_lock:
+            _pending_oauth = None
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to save session: {str(e)}"
         }), 500
 
 @app.route('/api/auth/status', methods=['GET'])
